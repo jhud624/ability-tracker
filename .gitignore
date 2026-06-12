@@ -1,0 +1,8 @@
+.DS_Store
+.vercel
+render_workouts/
+*.docx
+*.PNG
+*.png
+*.py
+~$*

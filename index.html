@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A session-only workout tracker for Back Ability and Knee Ability routines."
+    />
+    <title>Ability Tracker</title>
+    <link rel="preconnect" href="https://i.ytimg.com" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#top" aria-label="Ability Tracker home">
+          <span class="brand-mark" aria-hidden="true">A</span>
+          <span>
+            <strong>Ability Tracker</strong>
+            <small>Move well. Mark it done.</small>
+          </span>
+        </a>
+        <div class="session-badge" title="Progress clears when this page reloads">
+          <span class="status-dot" aria-hidden="true"></span>
+          Session only
+        </div>
+      </header>
+
+      <main id="top">
+        <section class="hero" aria-labelledby="page-title">
+          <div class="hero-copy">
+            <p class="eyebrow" id="today-label">Today's training</p>
+            <h1 id="page-title">Build a more capable body.</h1>
+            <p>
+              Pick a back or knee routine, watch a movement demo when you need it,
+              and tap each activity as you finish.
+            </p>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <svg viewBox="0 0 360 240" role="img">
+              <defs>
+                <linearGradient id="figure-gradient" x1="0" x2="1" y1="0" y2="1">
+                  <stop offset="0" stop-color="#ff6b45" />
+                  <stop offset="1" stop-color="#ffbd59" />
+                </linearGradient>
+              </defs>
+              <circle cx="248" cy="90" r="72" fill="#fff0e8" />
+              <path d="M42 207 C108 175 231 175 330 207" fill="none" stroke="#dfe6e2" stroke-width="16" stroke-linecap="round" />
+              <circle cx="205" cy="38" r="18" fill="#173b35" />
+              <path d="M203 61 C177 84 175 119 198 141" fill="none" stroke="url(#figure-gradient)" stroke-width="23" stroke-linecap="round" />
+              <path d="M190 91 L144 122" fill="none" stroke="#173b35" stroke-width="15" stroke-linecap="round" />
+              <path d="M194 98 L238 119" fill="none" stroke="#173b35" stroke-width="15" stroke-linecap="round" />
+              <path d="M198 141 L153 181 L103 181" fill="none" stroke="#173b35" stroke-width="17" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M199 141 L241 177 L289 178" fill="none" stroke="#173b35" stroke-width="17" stroke-linecap="round" stroke-linejoin="round" />
+              <circle cx="61" cy="61" r="8" fill="#8fc8b9" />
+              <circle cx="83" cy="43" r="5" fill="#ffbd59" />
+              <path d="M307 57 l18 9 -18 9" fill="none" stroke="#8fc8b9" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+        </section>
+
+        <section class="tracker" aria-labelledby="tracker-title">
+          <div class="tracker-heading">
+            <div>
+              <p class="eyebrow">Choose your focus</p>
+              <h2 id="tracker-title">Today's workout</h2>
+            </div>
+            <button class="ghost-button" id="reset-button" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v6h6M20 20v-6h-6M5.5 15a7 7 0 0 0 11.5 2M18.5 9A7 7 0 0 0 7 7" /></svg>
+              Reset
+            </button>
+          </div>
+
+          <div class="area-switch" role="tablist" aria-label="Workout area">
+            <button class="area-button is-active" type="button" role="tab" aria-selected="true" data-area="back">
+              <span class="area-icon back-icon" aria-hidden="true"></span>
+              <span><strong>Back</strong><small>Mobility + strength</small></span>
+            </button>
+            <button class="area-button" type="button" role="tab" aria-selected="false" data-area="knee">
+              <span class="area-icon knee-icon" aria-hidden="true"></span>
+              <span><strong>Knee</strong><small>Capacity + control</small></span>
+            </button>
+          </div>
+
+          <div class="program-strip" id="program-strip" aria-label="Available routines"></div>
+
+          <section class="workout-panel" aria-live="polite">
+            <div class="workout-summary">
+              <div>
+                <p class="workout-kicker" id="workout-kicker"></p>
+                <h3 id="workout-name"></h3>
+                <p id="workout-description"></p>
+              </div>
+              <div class="progress-wrap">
+                <div class="progress-ring" id="progress-ring" aria-label="Workout progress">
+                  <span id="progress-percent">0%</span>
+                </div>
+                <div>
+                  <strong id="progress-count">0 of 0</strong>
+                  <small>activities complete</small>
+                </div>
+              </div>
+            </div>
+
+            <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
+
+            <div class="exercise-list" id="exercise-list"></div>
+
+            <div class="complete-card" id="complete-card" hidden>
+              <span class="complete-check" aria-hidden="true">✓</span>
+              <div>
+                <strong>Workout complete</strong>
+                <p>Nice work. This checklist will clear when the page is refreshed.</p>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="how-it-works" aria-labelledby="how-title">
+          <p class="eyebrow">Simple by design</p>
+          <h2 id="how-title">No account. No history. Just today.</h2>
+          <div class="steps">
+            <article><span>1</span><h3>Pick a routine</h3><p>Switch between your back and knee programs.</p></article>
+            <article><span>2</span><h3>Check the demo</h3><p>Open a video or a focused YouTube search for the movement.</p></article>
+            <article><span>3</span><h3>Tap when done</h3><p>Your progress lives only in this browser tab and resets on reload.</p></article>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <p>Exercise links are for reference, not medical advice. Stop if a movement causes pain.</p>
+      </footer>
+    </div>
+
+    <dialog class="demo-dialog" id="demo-dialog">
+      <div class="dialog-topbar">
+        <div><p class="eyebrow">Movement demo</p><h2 id="demo-title"></h2></div>
+        <button class="close-button" id="close-demo" type="button" aria-label="Close demo">×</button>
+      </div>
+      <div id="demo-content"></div>
+      <div class="dialog-actions">
+        <a class="primary-link" id="youtube-link" href="#" target="_blank" rel="noopener noreferrer">Open on YouTube</a>
+        <button class="ghost-button" id="dialog-done" type="button">Close</button>
+      </div>
+    </dialog>
+
+    <script src="app.js"></script>
+  </body>
+</html>
