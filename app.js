@@ -1228,15 +1228,38 @@ function chooseMapZoom(routeMap, width, height) {
   return 3;
 }
 
+function routeProjectedBounds(routeMap, zoom) {
+  const xs = [];
+  const ys = [];
+  (routeMap.points || []).forEach((point) => {
+    const x = lonToTileX(point.lon, zoom);
+    const y = latToTileY(point.lat, zoom);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      xs.push(x);
+      ys.push(y);
+    }
+  });
+  const bounds = routeMap.bounds || {};
+  if (!xs.length) {
+    xs.push(lonToTileX(bounds.min_lon, zoom), lonToTileX(bounds.max_lon, zoom));
+    ys.push(latToTileY(bounds.min_lat, zoom), latToTileY(bounds.max_lat, zoom));
+  }
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys)
+  };
+}
+
 function renderRouteMapPreview(routeMap) {
   if (!routeMap?.points || routeMap.points.length < 2 || !routeMap.bounds) return null;
   const width = 260;
   const height = 160;
   const zoom = chooseMapZoom(routeMap, width, height);
-  const centerLat = (Number(routeMap.bounds.min_lat) + Number(routeMap.bounds.max_lat)) / 2;
-  const centerLon = (Number(routeMap.bounds.min_lon) + Number(routeMap.bounds.max_lon)) / 2;
-  const centerX = lonToTileX(centerLon, zoom);
-  const centerY = latToTileY(centerLat, zoom);
+  const projected = routeProjectedBounds(routeMap, zoom);
+  const centerX = (projected.minX + projected.maxX) / 2;
+  const centerY = (projected.minY + projected.maxY) / 2;
   const tileMinX = Math.floor(centerX - width / 512) - 1;
   const tileMaxX = Math.floor(centerX + width / 512) + 1;
   const tileMinY = Math.floor(centerY - height / 512) - 1;
@@ -1258,10 +1281,10 @@ function renderRouteMapPreview(routeMap) {
 
   const preview = document.createElement("div");
   preview.className = "route-preview route-preview-map";
-  const tileHtml = tiles.map((tile) => {
-    const left = (tile.x - centerX) * 256 + width / 2;
-    const top = (tile.y - centerY) * 256 + height / 2;
-    return `<img alt="" src="https://tile.openstreetmap.org/${zoom}/${tile.wrappedX}/${tile.y}.png" style="left:${left}px;top:${top}px">`;
+  const tileImages = tiles.map((tile) => {
+    const x = (tile.x - centerX) * 256 + width / 2;
+    const y = (tile.y - centerY) * 256 + height / 2;
+    return `<image href="https://tile.openstreetmap.org/${zoom}/${tile.wrappedX}/${tile.y}.png" x="${compactNumber(x, 2)}" y="${compactNumber(y, 2)}" width="256" height="256" preserveAspectRatio="none"></image>`;
   }).join("");
   preview.innerHTML = `
     <div class="actual-chart-label">
@@ -1269,8 +1292,8 @@ function renderRouteMapPreview(routeMap) {
       <span>${routeMap.source_points || routeMap.points.length} pts</span>
     </div>
     <div class="map-thumb" style="--map-width:${width}px;--map-height:${height}px">
-      <div class="map-tiles">${tileHtml}</div>
       <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Run route on map">
+        ${tileImages}
         <path class="route-line" d="${path}"></path>
       </svg>
       <span class="map-attribution">&copy; OSM</span>

@@ -693,22 +693,11 @@ h3 {
 .map-thumb {
   position: relative;
   width: 100%;
-  height: min(var(--map-height), 180px);
-  min-height: 150px;
+  aspect-ratio: 260 / 160;
+  min-height: 0;
   overflow: hidden;
   border-radius: 6px;
   background: #e7ece8;
-}
-
-.map-tiles {
-  position: absolute;
-  inset: 0;
-}
-
-.map-tiles img {
-  position: absolute;
-  width: 256px;
-  height: 256px;
 }
 
 .map-thumb svg {
