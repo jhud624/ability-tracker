@@ -5,145 +5,281 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="A session-only workout tracker for Back Ability and Knee Ability routines."
+      content="A local-first workout coaching dashboard for ChatGPT weekly plans and coach exports."
     />
-    <title>Ability Tracker</title>
-    <link rel="preconnect" href="https://i.ytimg.com" />
+    <title>Coach Loop</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="#top" aria-label="Ability Tracker home">
-          <span class="brand-mark" aria-hidden="true">A</span>
+        <a class="brand" href="#today-view" aria-label="Coach Loop home">
+          <span class="brand-mark" aria-hidden="true">CL</span>
           <span>
-            <strong>Ability Tracker</strong>
-            <small>Move well. Mark it done.</small>
+            <strong>Coach Loop</strong>
+            <small>Plan, check off, export, adjust.</small>
           </span>
         </a>
-        <div class="session-badge" title="Progress clears when this page reloads">
-          <span class="status-dot" aria-hidden="true"></span>
-          Session only
+        <div class="topbar-actions">
+          <button class="ghost-button write-access-button" id="write-access-button" type="button">Unlock saves</button>
+          <div class="backend-badge" id="backend-status">
+            <span class="status-dot" aria-hidden="true"></span>
+            Connecting
+          </div>
         </div>
       </header>
 
-      <main id="top">
-        <section class="hero" aria-labelledby="page-title">
-          <div class="hero-copy">
-            <p class="eyebrow" id="today-label">Today's training</p>
-            <h1 id="page-title">Build a more capable body.</h1>
-            <p>
-              Pick a back or knee routine, watch a movement demo when you need it,
-              and tap each activity as you finish.
-            </p>
+      <main>
+        <section class="overview" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow" id="date-label">Today</p>
+            <h1 id="page-title">Workout coach dashboard</h1>
+            <p id="goal-summary">Loading your goals and active plan.</p>
           </div>
-          <div class="hero-art" aria-hidden="true">
-            <svg viewBox="0 0 360 240" role="img">
-              <defs>
-                <linearGradient id="figure-gradient" x1="0" x2="1" y1="0" y2="1">
-                  <stop offset="0" stop-color="#ff6b45" />
-                  <stop offset="1" stop-color="#ffbd59" />
-                </linearGradient>
-              </defs>
-              <circle cx="248" cy="90" r="72" fill="#fff0e8" />
-              <path d="M42 207 C108 175 231 175 330 207" fill="none" stroke="#dfe6e2" stroke-width="16" stroke-linecap="round" />
-              <circle cx="205" cy="38" r="18" fill="#173b35" />
-              <path d="M203 61 C177 84 175 119 198 141" fill="none" stroke="url(#figure-gradient)" stroke-width="23" stroke-linecap="round" />
-              <path d="M190 91 L144 122" fill="none" stroke="#173b35" stroke-width="15" stroke-linecap="round" />
-              <path d="M194 98 L238 119" fill="none" stroke="#173b35" stroke-width="15" stroke-linecap="round" />
-              <path d="M198 141 L153 181 L103 181" fill="none" stroke="#173b35" stroke-width="17" stroke-linecap="round" stroke-linejoin="round" />
-              <path d="M199 141 L241 177 L289 178" fill="none" stroke="#173b35" stroke-width="17" stroke-linecap="round" stroke-linejoin="round" />
-              <circle cx="61" cy="61" r="8" fill="#8fc8b9" />
-              <circle cx="83" cy="43" r="5" fill="#ffbd59" />
-              <path d="M307 57 l18 9 -18 9" fill="none" stroke="#8fc8b9" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
+          <div class="metric-grid" aria-label="Plan status">
+            <article>
+              <span id="metric-required">0/0</span>
+              <small>required done</small>
+            </article>
+            <article>
+              <span id="metric-runs">0</span>
+              <small>runs planned</small>
+            </article>
+            <article>
+              <span id="metric-streak">0</span>
+              <small>days no miss</small>
+            </article>
+            <article>
+              <span id="metric-week">-</span>
+              <small>weeks no miss</small>
+            </article>
           </div>
         </section>
 
-        <section class="tracker" aria-labelledby="tracker-title">
-          <div class="tracker-heading">
+        <nav class="tabbar" aria-label="Coach Loop views">
+          <button class="tab-button is-active" type="button" data-view="today-view">Today</button>
+          <button class="tab-button" type="button" data-view="week-view">Week</button>
+          <button class="tab-button" type="button" data-view="runs-view">Runs</button>
+          <button class="tab-button" type="button" data-view="library-view">Library</button>
+          <button class="tab-button" type="button" data-view="goals-view">Goals</button>
+          <button class="tab-button" type="button" data-view="gear-view">Gear</button>
+          <button class="tab-button" type="button" data-view="actuals-view">Actuals</button>
+          <button class="tab-button" type="button" data-view="import-view">Import</button>
+          <button class="tab-button" type="button" data-view="export-view">Export</button>
+        </nav>
+
+        <section class="view is-active" id="today-view" aria-labelledby="today-title">
+          <div class="section-heading">
             <div>
-              <p class="eyebrow">Choose your focus</p>
-              <h2 id="tracker-title">Today's workout</h2>
+              <p class="eyebrow">Next action</p>
+              <h2 id="today-title">Today</h2>
             </div>
-            <button class="ghost-button" id="reset-button" type="button">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v6h6M20 20v-6h-6M5.5 15a7 7 0 0 0 11.5 2M18.5 9A7 7 0 0 0 7 7" /></svg>
-              Reset
-            </button>
+            <button class="ghost-button" id="refresh-button" type="button">Refresh</button>
           </div>
-
-          <div class="area-switch" role="tablist" aria-label="Workout area">
-            <button class="area-button is-active" type="button" role="tab" aria-selected="true" data-area="back">
-              <span class="area-icon back-icon" aria-hidden="true"></span>
-              <span><strong>Back</strong><small>Mobility + strength</small></span>
-            </button>
-            <button class="area-button" type="button" role="tab" aria-selected="false" data-area="knee">
-              <span class="area-icon knee-icon" aria-hidden="true"></span>
-              <span><strong>Knee</strong><small>Capacity + control</small></span>
-            </button>
-          </div>
-
-          <div class="program-strip" id="program-strip" aria-label="Available routines"></div>
-
-          <section class="workout-panel" aria-live="polite">
-            <div class="workout-summary">
-              <div>
-                <p class="workout-kicker" id="workout-kicker"></p>
-                <h3 id="workout-name"></h3>
-                <p id="workout-description"></p>
-              </div>
-              <div class="progress-wrap">
-                <div class="progress-ring" id="progress-ring" aria-label="Workout progress">
-                  <span id="progress-percent">0%</span>
-                </div>
-                <div>
-                  <strong id="progress-count">0 of 0</strong>
-                  <small>activities complete</small>
-                </div>
-              </div>
+          <form class="switcher-panel" id="today-switch-form">
+            <label for="today-switch-select">Switch today to another scheduled workout</label>
+            <div class="switcher-row">
+              <select id="today-switch-select"></select>
+              <button class="ghost-button" type="submit">Use Today</button>
+              <button class="ghost-button" id="clear-switch-button" type="button">Clear</button>
             </div>
-
-            <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
-
-            <div class="exercise-list" id="exercise-list"></div>
-
-            <div class="complete-card" id="complete-card" hidden>
-              <span class="complete-check" aria-hidden="true">✓</span>
-              <div>
-                <strong>Workout complete</strong>
-                <p>Nice work. This checklist will clear when the page is refreshed.</p>
-              </div>
-            </div>
-          </section>
+          </form>
+          <div class="activity-list" id="today-list"></div>
         </section>
 
-        <section class="how-it-works" aria-labelledby="how-title">
-          <p class="eyebrow">Simple by design</p>
-          <h2 id="how-title">No account. No history. Just today.</h2>
-          <div class="steps">
-            <article><span>1</span><h3>Pick a routine</h3><p>Switch between your back and knee programs.</p></article>
-            <article><span>2</span><h3>Check the demo</h3><p>Open a video or a focused YouTube search for the movement.</p></article>
-            <article><span>3</span><h3>Tap when done</h3><p>Your progress lives only in this browser tab and resets on reload.</p></article>
+        <section class="view" id="week-view" aria-labelledby="week-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Full plan</p>
+              <h2 id="week-title">Week</h2>
+            </div>
+          </div>
+          <div class="week-grid" id="week-grid"></div>
+        </section>
+
+        <section class="view" id="runs-view" aria-labelledby="runs-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Half marathon lens</p>
+              <h2 id="runs-title">Run Tracking</h2>
+            </div>
+          </div>
+          <div class="run-dashboard" id="run-dashboard"></div>
+          <div class="run-history" id="run-history"></div>
+        </section>
+
+        <section class="view" id="library-view" aria-labelledby="library-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Movement reference</p>
+              <h2 id="library-title">Workout Library</h2>
+            </div>
+          </div>
+          <div class="library-grid" id="library-grid"></div>
+        </section>
+
+        <section class="view" id="goals-view" aria-labelledby="goals-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Coach context</p>
+              <h2 id="goals-title">Goals</h2>
+            </div>
+          </div>
+          <div class="split-panel">
+            <form class="tool-panel goals-form" id="goals-form">
+              <label>Primary goal<input id="goal-primary" name="primary" type="text" /></label>
+              <label>Race date<input id="goal-race-date" name="race_date" type="date" /></label>
+              <label>Runs per week<input id="goal-run-frequency" name="run_frequency_per_week" type="number" min="0" max="7" inputmode="numeric" /></label>
+              <label>Strength focus<input id="goal-strength-focus" name="strength_focus" type="text" /></label>
+              <label>Back health<input id="goal-back-health" name="back_health" type="text" /></label>
+              <label>Recovery<input id="goal-recovery" name="recovery" type="text" /></label>
+              <button class="primary-button" type="submit">Save Goals</button>
+            </form>
+            <form class="tool-panel" id="coach-notes-form">
+              <label for="coach-notes">Coach notes</label>
+              <textarea id="coach-notes" spellcheck="true"></textarea>
+              <p class="field-help">
+                Use this for the notes you want ChatGPT to remember next time, instead of writing notes after every workout.
+              </p>
+              <button class="primary-button" type="submit">Save Notes</button>
+            </form>
           </div>
         </section>
+
+        <section class="view" id="gear-view" aria-labelledby="gear-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Planning context</p>
+              <h2 id="gear-title">Gear</h2>
+            </div>
+          </div>
+          <div class="split-panel">
+            <div class="gear-grid" id="gear-grid"></div>
+            <form class="tool-panel" id="gear-form">
+              <label for="gear-json">Add or update gear JSON</label>
+              <textarea id="gear-json" spellcheck="false"></textarea>
+              <p class="field-help">
+                Use a single item or <code>{"gear":[...]}</code>. Matching <code>gear_id</code> updates an existing item.
+              </p>
+              <button class="primary-button" type="submit">Save Gear</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="view" id="actuals-view" aria-labelledby="actuals-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Health feed</p>
+              <h2 id="actuals-title">Actuals</h2>
+            </div>
+          </div>
+          <div class="actuals-list" id="actuals-list"></div>
+          <div class="split-panel">
+            <form class="tool-panel" id="actuals-form">
+              <label for="actuals-json">Paste HealthKit-style JSON</label>
+              <textarea id="actuals-json" spellcheck="false"></textarea>
+              <p class="field-help">
+                Use keys <code>actual_workouts</code> and <code>daily_metrics</code>, or point Health Auto Export at <code>/api/health/auto-export</code>.
+              </p>
+              <button class="primary-button" type="submit">Import Actuals</button>
+            </form>
+            <div class="tool-panel">
+              <h3>Accepted shape</h3>
+              <pre>{
+  "actual_workouts": [
+    {
+      "date": "2026-06-20",
+      "type": "run",
+      "duration_minutes": 35,
+      "distance_miles": 3.1,
+      "average_heart_rate": 142
+    }
+  ],
+  "daily_metrics": [
+    {
+      "date": "2026-06-20",
+      "sleep_hours": 7.5,
+      "resting_heart_rate": 58,
+      "hrv_ms": 62,
+      "steps": 9300
+    }
+  ]
+}</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="import-view" aria-labelledby="import-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">ChatGPT to app</p>
+              <h2 id="import-title">Import plan</h2>
+            </div>
+          </div>
+          <form class="tool-panel" id="plan-import-form">
+            <label for="plan-json">Paste weekly plan JSON</label>
+            <textarea id="plan-json" spellcheck="false"></textarea>
+            <p class="field-help">
+              Required fields: <code>week_start_date</code> and <code>activities</code>. Missing activity IDs are generated automatically.
+            </p>
+            <button class="primary-button" type="submit">Import New Plan</button>
+          </form>
+        </section>
+
+        <section class="view" id="export-view" aria-labelledby="export-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">App to ChatGPT</p>
+              <h2 id="export-title">Coach export</h2>
+            </div>
+            <button class="primary-button" id="copy-summary-button" type="button">Copy Summary</button>
+          </div>
+          <div class="tool-panel">
+            <label for="coach-summary">Weekly coach summary</label>
+            <textarea id="coach-summary" readonly spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <p class="message" id="message" role="status" aria-live="polite"></p>
       </main>
 
-      <footer>
-        <p>Exercise links are for reference, not medical advice. Stop if a movement causes pain.</p>
-      </footer>
+      <div class="modal-backdrop" id="unlock-modal" hidden>
+        <form class="unlock-modal" id="unlock-form" aria-labelledby="unlock-title">
+          <div>
+            <p class="eyebrow">Write access</p>
+            <h2 id="unlock-title">Unlock Saves</h2>
+            <p>Enter your Coach Loop owner password to save changes in this browser.</p>
+          </div>
+          <label>Owner password<input id="unlock-password" name="password" type="password" autocomplete="current-password" required /></label>
+          <p class="form-error" id="unlock-error" role="alert"></p>
+          <div class="modal-actions">
+            <button class="ghost-button" id="unlock-cancel" type="button">Cancel</button>
+            <button class="primary-button" type="submit">Unlock</button>
+          </div>
+        </form>
+      </div>
     </div>
 
-    <dialog class="demo-dialog" id="demo-dialog">
-      <div class="dialog-topbar">
-        <div><p class="eyebrow">Movement demo</p><h2 id="demo-title"></h2></div>
-        <button class="close-button" id="close-demo" type="button" aria-label="Close demo">×</button>
-      </div>
-      <div id="demo-content"></div>
-      <div class="dialog-actions">
-        <a class="primary-link" id="youtube-link" href="#" target="_blank" rel="noopener noreferrer">Open on YouTube</a>
-        <button class="ghost-button" id="dialog-done" type="button">Close</button>
-      </div>
-    </dialog>
+    <template id="activity-template">
+      <article class="activity-card">
+        <div class="activity-main">
+          <button class="check-button" type="button"></button>
+          <div class="activity-copy">
+            <div class="activity-meta"></div>
+            <h3></h3>
+            <p></p>
+            <div class="equipment-tags"></div>
+          </div>
+        </div>
+        <div class="subtask-list"></div>
+        <div class="exercise-log-list"></div>
+        <form class="feedback-grid">
+          <label title="Difficulty: 1 is very easy, 10 is maximal effort.">Difficulty<input name="difficulty" type="number" min="1" max="10" inputmode="numeric" /></label>
+          <label>Back<input name="back_pain" type="number" min="0" max="10" inputmode="numeric" /></label>
+          <button class="ghost-button" type="submit">Save</button>
+        </form>
+      </article>
+    </template>
 
     <script src="app.js"></script>
   </body>
