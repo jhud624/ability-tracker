@@ -1391,6 +1391,37 @@ function actualTypeCompatibleWithActivity(actual, activity) {
   return activity.type === "weighted_vest" && actualGroup === "weighted_vest";
 }
 
+function activityTypeFromActual(actual) {
+  const group = actualWorkoutTypeGroup(actual);
+  if (["run", "weighted_vest", "lift", "mobility", "other"].includes(group)) return group;
+  return "other";
+}
+
+function titleFromActual(actual) {
+  const group = activityTypeFromActual(actual);
+  if (group === "weighted_vest") return "Weighted Vest Ruck";
+  if (group === "run") return actual.name || "Run";
+  if (group === "lift") return actual.name || "Strength Training";
+  if (group === "mobility") return actual.name || "Mobility";
+  return actual.name || "Other";
+}
+
+function activityDraftFromActual(actual, body = {}) {
+  return {
+    date: body.date || actual.date || (actual.start_date || "").slice(0, 10),
+    title: body.title || titleFromActual(actual),
+    type: body.type || activityTypeFromActual(actual),
+    required_or_optional: body.required_or_optional || "optional",
+    target: {
+      ...(actual.duration_minutes ? { duration_minutes: actual.duration_minutes } : {}),
+      ...(actual.distance_miles ? { distance_miles: actual.distance_miles } : {}),
+      notes: body.notes || "Created from imported Health actual."
+    },
+    equipment: body.equipment || (activityTypeFromActual(actual) === "weighted_vest" ? ["weighted vest"] : []),
+    subtasks: []
+  };
+}
+
 function compatibleSameDayActivitiesForActual(actual, store) {
   const plan = activePlan(store);
   return (plan?.activities || [])
@@ -1708,6 +1739,7 @@ const MCP_WRITE_TOOLS = new Set([
   "import_weekly_plan",
   "update_day_plan",
   "link_actual_to_activity",
+  "apply_actual_workout",
   "update_goals",
   "patch_goals",
   "update_run_plan",
@@ -2025,6 +2057,64 @@ async function handleApi(req, res, pathname) {
       return { ...current, health, actual_links };
     }, { action: "health.actual.delete", target: actualId });
     sendJson(res, 200, publicState(nextStore));
+    return;
+  }
+
+  const healthActualApplyMatch = pathname.match(/^\/api\/health\/actuals\/([^/]+)\/apply$/);
+  if (req.method === "POST" && healthActualApplyMatch) {
+    if (!requireWriteAuth(req, res)) return;
+    const actualId = decodeURIComponent(healthActualApplyMatch[1]);
+    const body = await readJsonBody(req);
+    try {
+      const nextStore = await updateStore((current) => {
+        const actual = (current.health.actual_workouts || []).find((item) => item.actual_id === actualId);
+        if (!actual) throw Object.assign(new Error("Actual workout not found"), { statusCode: 404 });
+        const currentPlan = activePlan(current);
+        if (!currentPlan) throw Object.assign(new Error("No active plan is available"), { statusCode: 404 });
+        const compatible = compatibleSameDayActivitiesForActual(actual, current);
+        const selectedActivity = compatible[0];
+        let targetActivityId = selectedActivity?.activity_id;
+        let plans = current.plans;
+        if (!targetActivityId) {
+          const sameDateActivities = currentPlan.activities.filter((activity) => activity.date === (body.date || actual.date));
+          const activity = normalizeActivityForPlan(
+            activityDraftFromActual(actual, body),
+            sameDateActivities.length,
+            body.date || actual.date
+          );
+          targetActivityId = activity.activity_id;
+          const updatedPlan = {
+            ...currentPlan,
+            activities: [...currentPlan.activities, activity].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+            updated_at: nowIso()
+          };
+          plans = current.plans.map((plan) => plan.plan_id === currentPlan.plan_id ? updatedPlan : plan);
+        }
+
+        const completions = { ...(current.completions || {}) };
+        const feedback = { ...(current.feedback || {}) };
+        const exercise_logs = { ...(current.exercise_logs || {}) };
+        const clearActivityId = body.clear_activity_id ? String(body.clear_activity_id) : "";
+        if (clearActivityId) {
+          delete completions[clearActivityId];
+          delete feedback[clearActivityId];
+          delete exercise_logs[clearActivityId];
+        }
+
+        const actual_links = { ...(current.actual_links || {}) };
+        Object.entries(actual_links).forEach(([linkedActualId, linkedActivityId]) => {
+          if (linkedActualId === actualId || linkedActivityId === targetActivityId || (clearActivityId && linkedActivityId === clearActivityId)) {
+            delete actual_links[linkedActualId];
+          }
+        });
+        actual_links[actualId] = targetActivityId;
+
+        return { ...current, plans, completions, feedback, exercise_logs, actual_links };
+      }, { action: "actual.apply", target: actualId });
+      sendJson(res, 200, publicState(nextStore));
+    } catch (error) {
+      sendError(res, error.statusCode || 400, error.message || "Unable to apply actual workout");
+    }
     return;
   }
 

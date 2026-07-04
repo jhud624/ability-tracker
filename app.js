@@ -820,6 +820,7 @@ function renderActivityActuals(activity) {
   const actuals = activity.actuals || [];
   const candidates = activity.actual_match_candidates || [];
   const defaultedMultiple = actuals.some((actual) => actual.natural_match_multiple && !actual.linked);
+  const manualCompleteWithUnlinkedActuals = !actuals.length && candidates.length && activity.completion?.completed;
 
   if (actuals.length) {
     if (defaultedMultiple) {
@@ -840,6 +841,13 @@ function renderActivityActuals(activity) {
       list.append(details);
     });
     block.append(list);
+  }
+
+  if (manualCompleteWithUnlinkedActuals) {
+    const warning = document.createElement("div");
+    warning.className = "match-warning";
+    warning.textContent = "Marked complete manually, but same-day actuals are available. Verify this is the right workout or link the matching actual.";
+    block.append(warning);
   }
 
   if (candidates.length) {

@@ -398,6 +398,26 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
   );
 
   registerTool(
+    "apply_actual_workout",
+    {
+      title: "Apply actual workout",
+      description: "Use an imported Health actual to complete the right same-day workout. If no compatible planned workout exists, this creates a same-day optional replacement activity and links the actual. Prefer this over mark_activity when the user reports a Health workout such as Hiking/rucking, running, walking, yard work, or strength training. If a wrong planned activity was already marked complete, pass clear_activity_id to undo that manual completion.",
+      inputSchema: {
+        actual_id: z.string(),
+        title: z.string().optional(),
+        type: z.string().optional(),
+        date: z.string().optional(),
+        notes: z.string().optional(),
+        clear_activity_id: z.string().optional()
+      }
+    },
+    async ({ actual_id, ...payload }) => asText(await request(`/api/health/actuals/${encodeURIComponent(actual_id)}/apply`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }))
+  );
+
+  registerTool(
     "update_goals",
     {
       title: "Update goals",
@@ -477,7 +497,7 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "mark_activity",
     {
       title: "Mark activity",
-      description: "Mark a planned activity complete/incomplete, optionally logging the date it was actually done. When subtask_id is provided, only that subtask is updated.",
+      description: "Mark a planned activity complete/incomplete, optionally logging the date it was actually done. When subtask_id is provided, only that subtask is updated. Do not use this to log a Health actual or substitute workout; use apply_actual_workout so Coach Loop can link or create the correct activity type.",
       inputSchema: {
         activity_id: z.string(),
         completed: z.boolean(),

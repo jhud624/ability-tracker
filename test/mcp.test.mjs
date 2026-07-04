@@ -45,6 +45,7 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
     assert.ok(names.includes("import_weekly_plan"));
     assert.ok(names.includes("update_goals"));
     assert.ok(names.includes("patch_goals"));
+    assert.ok(names.includes("apply_actual_workout"));
     assert.ok(names.includes("update_run_plan"));
     assert.ok(names.includes("get_run_plan"));
     assert.ok(names.includes("update_coach_notes"));

@@ -732,6 +732,85 @@ test("same-day Hiking actual automatically matches a weighted vest workout", asy
   }
 });
 
+test("applying an incompatible Hiking actual creates a weighted vest activity and can clear a wrong completion", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-apply-actual-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  try {
+    const before = await request(handleRequest, { path: "/api/state" });
+    const date = before.body.active_plan.activities[0].date;
+    const updatedDay = await request(handleRequest, {
+      method: "PUT",
+      path: `/api/plans/current/days/${date}`,
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        activities: [
+          {
+            title: "Upper Body + Arms",
+            type: "lift",
+            required_or_optional: "required",
+            target: { duration_minutes: 50 }
+          }
+        ]
+      }
+    });
+    const lift = updatedDay.body.active_plan.activities.find((item) => item.title === "Upper Body + Arms");
+
+    await request(handleRequest, {
+      method: "PATCH",
+      path: `/api/activities/${encodeURIComponent(lift.activity_id)}`,
+      headers: { authorization: "Bearer test-token" },
+      body: { completed: true, logged_date: date }
+    });
+
+    await request(handleRequest, {
+      method: "POST",
+      path: "/api/health/auto-export",
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        workouts: [
+          {
+            id: "vest-walk-actual-1",
+            name: "Hiking",
+            type: "hiking",
+            startDate: `${date}T08:00:00-04:00`,
+            duration: { qty: 1830, units: "sec" },
+            distance: { qty: 1.43, units: "mi" },
+            averageHeartRate: { qty: 106, units: "count/min" }
+          }
+        ]
+      }
+    });
+
+    const applied = await request(handleRequest, {
+      method: "POST",
+      path: "/api/health/actuals/vest-walk-actual-1/apply",
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        title: "Weighted Vest Dog Walk",
+        clear_activity_id: lift.activity_id
+      }
+    });
+
+    assert.equal(applied.statusCode, 200);
+    const updatedLift = applied.body.active_plan.activities.find((item) => item.activity_id === lift.activity_id);
+    const ruck = applied.body.active_plan.activities.find((item) => item.title === "Weighted Vest Dog Walk");
+    assert.equal(updatedLift.completion.completed, false);
+    assert.ok(ruck);
+    assert.equal(ruck.type, "weighted_vest");
+    assert.equal(ruck.actuals.length, 1);
+    assert.equal(ruck.actuals[0].actual_id, "vest-walk-actual-1");
+    assert.equal(applied.body.actual_links["vest-walk-actual-1"], ruck.activity_id);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
 test("owner session cookie authorizes dashboard writes without a bearer API token", async () => {
   const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
   const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
