@@ -217,7 +217,7 @@ async function lockWriteAccess(message = "Saves locked.", isError = false) {
 }
 
 async function api(path, options = {}) {
-  const { headers = {}, ...fetchOptions } = options;
+  const { headers = {}, retryAuth = true, ...fetchOptions } = options;
   const method = String(fetchOptions.method || "GET").toUpperCase();
   const isWrite = !["GET", "HEAD"].includes(method);
   if (isWrite && !state.writeAccess) {
@@ -233,10 +233,14 @@ async function api(path, options = {}) {
     }
   });
   const payload = await response.json();
-  if (response.status === 401 && isWrite) {
+  if (response.status === 401 && path !== "/api/session" && retryAuth !== false) {
     state.writeAccess = false;
     updateWriteAccessUi();
-    setMessage("Your save session expired. Unlock saves and retry.", true);
+    setMessage(isWrite ? "Your save session expired. Unlock saves and retry." : "Unlock Coach Loop to view your data.", true);
+    const unlocked = await requestWriteAccess();
+    if (unlocked) {
+      return api(path, { ...options, retryAuth: false });
+    }
   }
   if (!response.ok) throw new Error(payload.error || "Request failed");
   return payload;
@@ -1289,7 +1293,7 @@ function renderRouteMapPreview(routeMap) {
   preview.innerHTML = `
     <div class="actual-chart-label">
       <span>Map</span>
-      <span>${routeMap.source_points || routeMap.points.length} pts</span>
+      <span>${escapeHtml(routeMap.source_points || routeMap.points.length)} pts</span>
     </div>
     <div class="map-thumb" style="--map-width:${width}px;--map-height:${height}px">
       <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Run route on map">
@@ -1312,7 +1316,7 @@ function renderRoutePreview(routeShape) {
   preview.innerHTML = `
     <div class="actual-chart-label">
       <span>Route shape</span>
-      <span>${routeShape.source_points || routeShape.points.length} pts</span>
+      <span>${escapeHtml(routeShape.source_points || routeShape.points.length)} pts</span>
     </div>
     <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Simplified route shape">
       <path class="route-line" d="${path}"></path>

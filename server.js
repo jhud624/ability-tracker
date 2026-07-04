@@ -955,13 +955,75 @@ function compactRouteMap(route = []) {
   };
 }
 
+function sanitizeRouteShape(routeShape) {
+  if (!routeShape || typeof routeShape !== "object" || !Array.isArray(routeShape.points)) return undefined;
+  const points = routeShape.points
+    .map((point) => ({
+      x: roundTo(Number(point.x), 4),
+      y: roundTo(Number(point.y), 4)
+    }))
+    .filter((point) => Number.isFinite(point.x) && point.x >= 0 && point.x <= 1 && Number.isFinite(point.y) && point.y >= 0 && point.y <= 1);
+  if (points.length < 2) return undefined;
+  const sourcePoints = Number(routeShape.source_points ?? routeShape.sourcePoints ?? points.length);
+  return {
+    source_points: Number.isFinite(sourcePoints) && sourcePoints > 0 ? Math.round(sourcePoints) : points.length,
+    points: downsampleEvenly(points, 160)
+  };
+}
+
+function sanitizeRouteMap(routeMap) {
+  if (!routeMap || typeof routeMap !== "object" || !Array.isArray(routeMap.points)) return undefined;
+  const points = routeMap.points
+    .map((point) => ({
+      lat: roundTo(Number(point.lat ?? point.latitude), 6),
+      lon: roundTo(Number(point.lon ?? point.longitude), 6)
+    }))
+    .filter((point) => Number.isFinite(point.lat) && point.lat >= -90 && point.lat <= 90 && Number.isFinite(point.lon) && point.lon >= -180 && point.lon <= 180);
+  if (points.length < 2) return undefined;
+  const latitudes = points.map((point) => point.lat);
+  const longitudes = points.map((point) => point.lon);
+  const bounds = routeMap.bounds && typeof routeMap.bounds === "object" ? {
+    min_lat: Number(routeMap.bounds.min_lat),
+    max_lat: Number(routeMap.bounds.max_lat),
+    min_lon: Number(routeMap.bounds.min_lon),
+    max_lon: Number(routeMap.bounds.max_lon)
+  } : null;
+  const validBounds = bounds
+    && Number.isFinite(bounds.min_lat)
+    && Number.isFinite(bounds.max_lat)
+    && Number.isFinite(bounds.min_lon)
+    && Number.isFinite(bounds.max_lon)
+    && bounds.min_lat >= -90
+    && bounds.max_lat <= 90
+    && bounds.min_lon >= -180
+    && bounds.max_lon <= 180
+    && bounds.min_lat <= bounds.max_lat
+    && bounds.min_lon <= bounds.max_lon;
+  const sourcePoints = Number(routeMap.source_points ?? routeMap.sourcePoints ?? points.length);
+  return {
+    source_points: Number.isFinite(sourcePoints) && sourcePoints > 0 ? Math.round(sourcePoints) : points.length,
+    bounds: validBounds ? {
+      min_lat: roundTo(bounds.min_lat, 6),
+      max_lat: roundTo(bounds.max_lat, 6),
+      min_lon: roundTo(bounds.min_lon, 6),
+      max_lon: roundTo(bounds.max_lon, 6)
+    } : {
+      min_lat: roundTo(Math.min(...latitudes), 6),
+      max_lat: roundTo(Math.max(...latitudes), 6),
+      min_lon: roundTo(Math.min(...longitudes), 6),
+      max_lon: roundTo(Math.max(...longitudes), 6)
+    },
+    points: downsampleEvenly(points, 160)
+  };
+}
+
 function workoutDurationMinutes(actual) {
   if (actual.duration_minutes !== undefined || actual.durationMinutes !== undefined) {
     const value = minutesFromDuration(actual.duration_minutes ?? actual.durationMinutes);
     return value && value > 600 ? value / 60 : value;
   }
   const value = actual.duration ?? actual.totalTime;
-  if (typeof value === "number") return value > 600 ? value / 60 : value;
+  if (typeof value === "number") return value / 60;
   return minutesFromDuration(value);
 }
 
@@ -1000,8 +1062,8 @@ function normalizeActualWorkout(actual) {
     splits: Array.isArray(actual.splits) ? actual.splits : computeMileSplitsFromRoute(actual.route),
     route_point_count: actual.route_point_count ?? actual.routePointCount ?? (Array.isArray(actual.route) ? actual.route.length : undefined),
     heart_rate_series: Array.isArray(actual.heart_rate_series) ? actual.heart_rate_series : compactHeartRateSeries(actual.heartRateData),
-    route_shape: actual.route_shape || actual.routeShape || compactRouteShape(actual.route),
-    route_map: actual.route_map || actual.routeMap || compactRouteMap(actual.route),
+    route_shape: sanitizeRouteShape(actual.route_shape || actual.routeShape) || compactRouteShape(actual.route),
+    route_map: sanitizeRouteMap(actual.route_map || actual.routeMap) || compactRouteMap(actual.route),
     heart_rate_recovery: actual.heart_rate_recovery || actual.heartRateRecoverySummary || computeHeartRateRecovery(actual.heartRateRecovery),
     heart_rate_drift: actual.heart_rate_drift || actual.heartRateDrift || computeHeartRateDrift(actual.heartRateData),
     pace_drift: actual.pace_drift || actual.paceDrift || computePaceDrift(actual.walkingAndRunningDistance),
@@ -1622,6 +1684,12 @@ function requireWriteAuth(req, res) {
   return false;
 }
 
+function requireReadAuth(req, res) {
+  if (isAuthorized(req)) return true;
+  sendError(res, 401, "Sign in to Coach Loop to view your data");
+  return false;
+}
+
 function isCronAuthorized(req) {
   const secret = cleanSecret(process.env.COACH_LOOP_CRON_SECRET || process.env.CRON_SECRET);
   if (!secret) return true;
@@ -1715,6 +1783,14 @@ async function handleMcpRequest(req, res) {
 }
 
 function readJsonBody(req) {
+  if (req.body !== undefined && req.body !== null) {
+    if (typeof req.body === "string") return Promise.resolve(req.body.trim() ? JSON.parse(req.body) : {});
+    if (Buffer.isBuffer(req.body)) {
+      const text = req.body.toString("utf8");
+      return Promise.resolve(text.trim() ? JSON.parse(text) : {});
+    }
+    if (typeof req.body === "object") return Promise.resolve(req.body);
+  }
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (chunk) => {
@@ -1853,6 +1929,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/state") {
+    if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, publicState(store));
     return;
   }
@@ -1868,12 +1945,14 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/plans/current") {
+    if (!requireReadAuth(req, res)) return;
     const plan = activePlan(store);
     sendJson(res, 200, plan ? { ...plan, activities: plan.activities.map((activity) => activityWithState(activity, store)) } : null);
     return;
   }
 
   if (req.method === "GET" && pathname === "/api/planning-context") {
+    if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, {
       goals: store.goals,
       coach_notes: store.coach_notes || "",
@@ -1890,16 +1969,19 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/gear") {
+    if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, store.gear || []);
     return;
   }
 
   if (req.method === "GET" && pathname === "/api/audit") {
+    if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, (store.audit_events || []).slice(-100).reverse());
     return;
   }
 
   if (req.method === "GET" && pathname === "/api/health/import-status") {
+    if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, {
       actual_workouts_count: store.health.actual_workouts?.length || 0,
       daily_metrics_count: store.health.daily_metrics?.length || 0,
@@ -2231,6 +2313,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/coach-summary") {
+    if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, createCoachSummary(store));
     return;
   }

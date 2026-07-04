@@ -8,7 +8,7 @@ let redisClient = null;
 let fileWriteQueue = Promise.resolve();
 
 function dataDir() {
-  return process.env.COACH_LOOP_DATA_DIR || (process.env.VERCEL ? "/tmp/coach-loop-data" : path.join(ROOT, "data"));
+  return process.env.COACH_LOOP_DATA_DIR || path.join(ROOT, "data");
 }
 
 function storePath() {
@@ -50,6 +50,15 @@ function storageMode() {
   return redisConfig() ? "redis" : "file";
 }
 
+function allowFileStorage() {
+  return process.env.COACH_LOOP_ALLOW_FILE_STORAGE === "true" || (!process.env.VERCEL && process.env.NODE_ENV !== "production");
+}
+
+function assertDurableStorage() {
+  if (redisConfig() || allowFileStorage()) return;
+  throw new Error("Durable Redis/KV storage is not configured. Refusing to use ephemeral file storage in production.");
+}
+
 async function readStoreData(createDefaultState) {
   const client = redis();
   if (client) {
@@ -60,6 +69,7 @@ async function readStoreData(createDefaultState) {
     return initial;
   }
 
+  assertDurableStorage();
   fs.mkdirSync(dataDir(), { recursive: true });
   if (!fs.existsSync(storePath())) {
     const initial = createDefaultState();
@@ -76,6 +86,7 @@ async function writeStoreData(store) {
     return store;
   }
 
+  assertDurableStorage();
   fs.mkdirSync(dataDir(), { recursive: true });
   fs.writeFileSync(storePath(), `${JSON.stringify(store, null, 2)}\n`);
   return store;
@@ -115,6 +126,7 @@ async function createStoreBackup(store, reason = "manual") {
     return backupMetadata(envelope);
   }
 
+  assertDurableStorage();
   fs.mkdirSync(backupDir(), { recursive: true });
   fs.writeFileSync(path.join(backupDir(), `${envelope.backup_id}.json`), `${JSON.stringify(envelope, null, 2)}\n`);
   const files = fs.readdirSync(backupDir())
@@ -133,6 +145,7 @@ async function listStoreBackups(limit = 30) {
     return envelopes.map(backupMetadata);
   }
 
+  assertDurableStorage();
   if (!fs.existsSync(backupDir())) return [];
   return fs.readdirSync(backupDir())
     .filter((file) => file.endsWith(".json"))
@@ -149,6 +162,7 @@ async function readStoreBackup(backupId) {
     return envelopes.find((envelope) => envelope.backup_id === backupId) || null;
   }
 
+  assertDurableStorage();
   const file = path.join(backupDir(), `${backupId}.json`);
   if (!fs.existsSync(file)) return null;
   return JSON.parse(fs.readFileSync(file, "utf8"));

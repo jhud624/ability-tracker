@@ -142,6 +142,44 @@ test("Coach Loop hosted MCP endpoint works over Streamable HTTP", async () => {
   }
 });
 
+test("Coach Loop hosted MCP writes persist through the protected API path", async () => {
+  const previousEnv = {
+    COACH_LOOP_API_TOKEN: process.env.COACH_LOOP_API_TOKEN,
+    COACH_LOOP_DATA_DIR: process.env.COACH_LOOP_DATA_DIR
+  };
+  process.env.COACH_LOOP_API_TOKEN = "test-api-token";
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-hosted-mcp-write-test-`);
+
+  const { server, url } = await startHttpServer();
+  const client = new Client({ name: "coach-loop-http-write-test", version: "0.1.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`));
+
+  try {
+    await client.connect(transport);
+    await client.callTool({
+      name: "patch_goals",
+      arguments: {
+        goals: {
+          primary: "Persist hosted MCP writes"
+        }
+      }
+    });
+    const response = await fetch(`${url}/api/state`, {
+      headers: { authorization: "Bearer test-api-token" }
+    });
+    assert.equal(response.status, 200);
+    const state = await response.json();
+    assert.equal(state.goals.primary, "Persist hosted MCP writes");
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+    Object.entries(previousEnv).forEach(([key, value]) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    });
+  }
+});
+
 test("Coach Loop OAuth flow protects MCP access", async () => {
   const previousEnv = {
     COACH_LOOP_API_TOKEN: process.env.COACH_LOOP_API_TOKEN,
@@ -250,6 +288,51 @@ test("Coach Loop OAuth flow protects MCP access", async () => {
     } finally {
       await client.close();
     }
+  } finally {
+    Object.entries(previousEnv).forEach(([key, value]) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    });
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Coach Loop OAuth rejects redirect URIs not registered to the client", async () => {
+  const previousEnv = {
+    COACH_LOOP_API_TOKEN: process.env.COACH_LOOP_API_TOKEN,
+    COACH_LOOP_OAUTH_PASSWORD: process.env.COACH_LOOP_OAUTH_PASSWORD,
+    COACH_LOOP_REQUIRE_MCP_OAUTH: process.env.COACH_LOOP_REQUIRE_MCP_OAUTH
+  };
+  process.env.COACH_LOOP_API_TOKEN = "test-api-token";
+  process.env.COACH_LOOP_OAUTH_PASSWORD = "test-owner-password";
+  process.env.COACH_LOOP_REQUIRE_MCP_OAUTH = "true";
+
+  const { server, url } = await startHttpServer();
+
+  try {
+    const registration = await fetch(`${url}/oauth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "OAuth redirect test",
+        redirect_uris: ["https://chat.openai.com/aip/callback"]
+      })
+    }).then((response) => response.json());
+
+    const verifier = "oauth-redirect-test-verifier";
+    const authorizeParams = {
+      response_type: "code",
+      client_id: registration.client_id,
+      redirect_uri: "https://attacker.example/callback",
+      code_challenge: codeChallenge(verifier),
+      code_challenge_method: "S256",
+      scope: "coach:read coach:write",
+      resource: `${url}/mcp`
+    };
+
+    const authorizePage = await fetch(`${url}/oauth/authorize?${new URLSearchParams(authorizeParams)}`);
+    assert.equal(authorizePage.status, 400);
+    assert.match(await authorizePage.text(), /redirect_uri is not registered/);
   } finally {
     Object.entries(previousEnv).forEach(([key, value]) => {
       if (value === undefined) delete process.env[key];

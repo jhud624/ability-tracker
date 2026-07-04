@@ -28,7 +28,12 @@ function sha256Base64Url(value) {
 }
 
 function oauthSecret() {
-  return cleanSecret(process.env.COACH_LOOP_OAUTH_SIGNING_SECRET) || cleanSecret(process.env.COACH_LOOP_API_TOKEN) || "coach-loop-dev-secret";
+  const secret = cleanSecret(process.env.COACH_LOOP_OAUTH_SIGNING_SECRET) || cleanSecret(process.env.COACH_LOOP_API_TOKEN);
+  if (secret) return secret;
+  if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+    throw new Error("COACH_LOOP_OAUTH_SIGNING_SECRET or COACH_LOOP_API_TOKEN is required in production");
+  }
+  return "coach-loop-dev-secret";
 }
 
 function ownerPassword() {
@@ -259,6 +264,21 @@ function authorizationServerMetadata(req) {
   };
 }
 
+function registeredClientFromId(clientId) {
+  const prefix = "coach_loop_";
+  if (!String(clientId || "").startsWith(prefix)) throw new Error("client_id is invalid");
+  const client = verifySignedToken(String(clientId).slice(prefix.length), "client");
+  return {
+    ...client,
+    redirect_uris: Array.isArray(client.redirect_uris) ? client.redirect_uris : []
+  };
+}
+
+function redirectUriAllowedForClient(clientId, redirectUri) {
+  const client = registeredClientFromId(clientId);
+  return client.redirect_uris.includes(redirectUri);
+}
+
 function sendProtectedResourceMetadata(req, res) {
   sendJson(res, 200, protectedResourceMetadata(req));
 }
@@ -327,6 +347,7 @@ function validateAuthorizeParams(params) {
   if (params.response_type !== "code") throw new Error("response_type must be code");
   if (!params.client_id) throw new Error("client_id is required");
   if (!params.redirect_uri || !isSafeRedirectUri(params.redirect_uri)) throw new Error("redirect_uri is invalid");
+  if (!redirectUriAllowedForClient(params.client_id, params.redirect_uri)) throw new Error("redirect_uri is not registered for this client");
   if (!params.code_challenge) throw new Error("code_challenge is required");
   if (params.code_challenge_method !== "S256") throw new Error("code_challenge_method must be S256");
 }
@@ -428,6 +449,7 @@ async function handleToken(req, res) {
     const code = verifySignedToken(params.code, "authorization_code");
     if (code.client_id !== params.client_id) throw new Error("invalid_grant");
     if (code.redirect_uri !== params.redirect_uri) throw new Error("invalid_grant");
+    if (!redirectUriAllowedForClient(params.client_id, params.redirect_uri)) throw new Error("invalid_grant");
     if (code.code_challenge_method !== "S256") throw new Error("invalid_grant");
     if (sha256Base64Url(params.code_verifier) !== code.code_challenge) throw new Error("invalid_grant");
 

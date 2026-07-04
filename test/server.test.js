@@ -10,12 +10,12 @@ const {
   validatePlan
 } = require("../server");
 
-function request(handler, { method = "GET", path = "/", body = null, headers = {} } = {}) {
+function request(handler, { method = "GET", path = "/", body = null, headers = {}, preParsedBody = false } = {}) {
   return new Promise((resolve) => {
     const chunks = [];
     const req = new (require("node:stream").Readable)({
       read() {
-        if (body === null) this.push(null);
+        if (body === null || preParsedBody) this.push(null);
         else {
           this.push(typeof body === "string" ? body : JSON.stringify(body));
           this.push(null);
@@ -24,11 +24,16 @@ function request(handler, { method = "GET", path = "/", body = null, headers = {
     });
     req.method = method;
     req.url = path;
-    req.headers = {
+    if (preParsedBody) req.body = body || {};
+    const resolvedHeaders = {
       host: "127.0.0.1",
       "content-type": "application/json",
       ...headers
     };
+    if (process.env.COACH_LOOP_API_TOKEN && resolvedHeaders.authorization === undefined && resolvedHeaders.cookie === undefined) {
+      resolvedHeaders.authorization = `Bearer ${process.env.COACH_LOOP_API_TOKEN}`;
+    }
+    req.headers = resolvedHeaders;
     const res = {
       statusCode: 200,
       headers: {},
@@ -93,6 +98,33 @@ test("createDefaultState seeds inferred gear inventory", () => {
   assert.ok(names.includes("Weighted vest"));
   assert.ok(names.includes("Treadmill"));
   assert.ok(store.gear.find((item) => item.gear_id === "gear-weighted-vest").notes.includes("Hiking"));
+});
+
+test("private read endpoints require owner auth when an API token is configured", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-read-auth-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  try {
+    const denied = await request(handleRequest, {
+      path: "/api/state",
+      headers: { authorization: "" }
+    });
+    assert.equal(denied.statusCode, 401);
+
+    const allowed = await request(handleRequest, {
+      path: "/api/state",
+      headers: { authorization: "Bearer test-token" }
+    });
+    assert.equal(allowed.statusCode, 200);
+    assert.ok(allowed.body.health);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
 });
 
 test("validatePlan rejects plans without activities", () => {
@@ -340,6 +372,88 @@ test("health auto export imports nested data.workouts payloads", async () => {
     assert.equal(deleted.statusCode, 200);
     assert.equal(deleted.body.health.actual_workouts.length, 1);
     assert.equal(deleted.body.health.actual_workouts[0].actual_id, "nested-workout-2");
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
+test("health imports accept Vercel pre-parsed request bodies", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-preparsed-body-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  try {
+    const response = await request(handleRequest, {
+      method: "POST",
+      path: "/api/health/auto-export",
+      headers: { authorization: "Bearer test-token" },
+      preParsedBody: true,
+      body: {
+        workouts: [
+          {
+            id: "preparsed-workout-1",
+            name: "Outdoor Run",
+            startDate: "2026-06-30T10:00:00-04:00",
+            duration: { qty: 600, units: "sec" },
+            distance: { qty: 1, units: "mi" }
+          }
+        ]
+      }
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.health.actual_workouts[0].actual_id, "preparsed-workout-1");
+    assert.equal(response.body.health.actual_workouts[0].duration_minutes, 10);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
+test("health imports sanitize supplied route previews and short numeric durations", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-route-sanitize-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  try {
+    const response = await request(handleRequest, {
+      method: "POST",
+      path: "/api/health/import",
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        actual_workouts: [
+          {
+            id: "route-xss-1",
+            name: "Outdoor Run",
+            startDate: "2026-06-30T10:00:00-04:00",
+            duration: 540,
+            route_shape: {
+              source_points: "<img src=x onerror=alert(1)>",
+              points: [{ x: 0, y: 0 }, { x: 1, y: 1 }]
+            },
+            route_map: {
+              source_points: "<script>alert(1)</script>",
+              points: [{ lat: 42.1, lon: -71.1 }, { lat: 42.2, lon: -71.2 }]
+            }
+          }
+        ]
+      }
+    });
+
+    assert.equal(response.statusCode, 200);
+    const actual = response.body.health.actual_workouts[0];
+    assert.equal(actual.duration_minutes, 9);
+    assert.equal(actual.route_shape.source_points, 2);
+    assert.equal(actual.route_map.source_points, 2);
+    assert.deepEqual(Object.keys(actual.route_shape.points[0]).sort(), ["x", "y"]);
+    assert.deepEqual(Object.keys(actual.route_map.points[0]).sort(), ["lat", "lon"]);
   } finally {
     if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
     else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
@@ -633,6 +747,7 @@ test("owner session cookie authorizes dashboard writes without a bearer API toke
     const locked = await request(handleRequest, {
       method: "PATCH",
       path: `/api/activities/${encodeURIComponent(activity.activity_id)}`,
+      headers: { authorization: "" },
       body: { completed: true }
     });
     assert.equal(locked.statusCode, 401);
@@ -804,7 +919,10 @@ test("health raw debug capture is write-token protected", async () => {
   process.env.COACH_LOOP_API_TOKEN = "test-token";
 
   try {
-    const unauthenticated = await request(handleRequest, { path: "/api/health/raw-debug" });
+    const unauthenticated = await request(handleRequest, {
+      path: "/api/health/raw-debug",
+      headers: { authorization: "" }
+    });
     assert.equal(unauthenticated.statusCode, 401);
 
     const response = await request(handleRequest, {

@@ -95,6 +95,8 @@ COACH_LOOP_STORE_KEY=coach-loop:store
 
 `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` also work in place of the `KV_` variables.
 
+Production requires durable Redis/KV storage. The server refuses to use local file storage on Vercel unless `COACH_LOOP_ALLOW_FILE_STORAGE=true` is explicitly set for a temporary test deployment.
+
 Optional environment variables:
 
 ```text
@@ -104,6 +106,8 @@ COACH_LOOP_REQUIRE_MCP_OAUTH=true
 COACH_LOOP_OAUTH_PASSWORD=<password entered on the authorization page>
 COACH_LOOP_OAUTH_SIGNING_SECRET=<stable secret for OAuth codes and tokens>
 ```
+
+When `COACH_LOOP_API_TOKEN` is set, both reads and writes to personal data endpoints require either the owner session cookie or a bearer token. Static assets, health checks, OAuth metadata, and OAuth registration/authorization endpoints remain public.
 
 Use `COACH_LOOP_REQUIRE_MCP_OAUTH=true` for ChatGPT connector auth. Leave `COACH_LOOP_MCP_TOKEN` unset for ChatGPT unless you specifically need a static bearer-token bypass for another MCP client.
 

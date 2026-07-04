@@ -1072,20 +1072,73 @@ textarea {
 }
 
 .day-column .exercise-log-row {
-  grid-template-columns: minmax(118px, 1fr) minmax(120px, 0.72fr) minmax(74px, 0.55fr) minmax(54px, 0.4fr) minmax(54px, 0.4fr) minmax(64px, 0.4fr) minmax(64px, auto) minmax(76px, auto) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
 .day-column .exercise-entry-row {
-  grid-template-columns: 20px minmax(118px, 1fr) minmax(120px, 0.72fr) minmax(74px, 0.55fr) minmax(54px, 0.4fr) minmax(54px, 0.4fr) minmax(64px, 0.4fr) minmax(64px, auto) minmax(76px, auto) auto;
+  grid-template-columns: 22px repeat(3, minmax(0, 1fr));
   gap: 6px;
+  align-items: center;
 }
 
 .day-column .exercise-log-title {
-  padding-bottom: 10px;
+  grid-column: 1 / -1;
+  padding-bottom: 0;
+}
+
+.day-column .exercise-entry-row > input[type="checkbox"] {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.day-column .exercise-entry-row .subtask-title {
+  grid-column: 2 / -1;
+  grid-row: 1;
+}
+
+.day-column .exercise-log-row label,
+.day-column .exercise-entry-row label {
+  min-width: 0;
+}
+
+.day-column .exercise-log-row .exercise-swap-label,
+.day-column .exercise-entry-row .exercise-swap-label {
+  grid-column: 1 / -1;
+}
+
+.day-column .exercise-entry-row label:nth-of-type(2),
+.day-column .exercise-log-row label:nth-of-type(2) {
+  grid-column: 1 / 2;
+}
+
+.day-column .exercise-entry-row label:nth-of-type(3),
+.day-column .exercise-log-row label:nth-of-type(3) {
+  grid-column: 2 / 3;
+}
+
+.day-column .exercise-entry-row label:nth-of-type(4),
+.day-column .exercise-log-row label:nth-of-type(4) {
+  grid-column: 3 / 4;
+}
+
+.day-column .exercise-entry-row .duration-field,
+.day-column .exercise-log-row .duration-field {
+  grid-column: 1 / -1;
 }
 
 .day-column .exercise-total {
+  grid-column: 1 / 2;
+  min-width: 0;
+}
+
+.day-column .exercise-last {
+  grid-column: 2 / 3;
+  min-width: 0;
+}
+
+.day-column .autosave-status {
+  grid-column: 3 / 4;
   min-width: 0;
 }
 
