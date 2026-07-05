@@ -1084,7 +1084,11 @@ function normalizeActualWorkout(actual) {
 }
 
 function dateFromMetricSample(sample) {
-  return sample.date || String(sample.start_date || sample.startDate || sample.start || sample.end_date || sample.endDate || "").slice(0, 10);
+  const value = sample.date || sample.start_date || sample.startDate || sample.start || sample.end_date || sample.endDate || "";
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+  const parsed = parseHealthTimestamp(value);
+  return parsed ? dateKey(new Date(parsed)) : "";
 }
 
 function metricSamplesFromBody(body) {

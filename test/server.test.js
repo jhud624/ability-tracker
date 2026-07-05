@@ -274,15 +274,15 @@ test("health auto export payload imports workouts and metrics", async () => {
         metrics: [
           {
             name: "step_count",
-            data: [{ date: "2026-06-30", qty: 9300 }]
+            data: [{ date: "2026-06-30 10:00:00 -0400", qty: 9300 }]
           },
           {
             name: "resting_heart_rate",
-            data: [{ date: "2026-06-30", qty: 58 }]
+            data: [{ date: "2026-06-30 07:00:00 -0400", qty: 58 }]
           },
           {
             name: "heart_rate_variability_sdnn",
-            data: [{ date: "2026-06-30", qty: 62 }]
+            data: [{ date: "2026-06-30 07:05:00 -0400", qty: 62 }]
           }
         ]
       }

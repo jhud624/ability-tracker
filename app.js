@@ -722,6 +722,13 @@ function attachFeedbackAutosave(form, activity) {
     timer = window.setTimeout(flushAutosave, delay);
   }
 
+  async function flushNow() {
+    window.clearTimeout(timer);
+    await flushAutosave();
+  }
+
+  activeAutosaveFlushers.add(flushNow);
+
   ["difficulty", "back_pain"].forEach((field) => {
     const input = form.elements[field];
     if (!input) return;
@@ -731,8 +738,7 @@ function attachFeedbackAutosave(form, activity) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    window.clearTimeout(timer);
-    await flushAutosave();
+    await flushNow();
   });
 }
 
@@ -1450,11 +1456,11 @@ function roundDistance(value) {
   return Math.round(Number(value || 0) * 10) / 10;
 }
 
-function runDistancesForWeek(longRunDistance, runCount, raceWeek = false) {
+function runDistancesForWeek(longRunDistance, runCount, raceWeek = false, targetDistance = 13.1) {
   const count = Math.max(1, Number(runCount || 3));
   if (raceWeek) {
     const tuneups = count <= 2 ? [3] : [3, 2];
-    return [...tuneups.slice(0, Math.max(0, count - 1)), 13.1].slice(-count);
+    return [...tuneups.slice(0, Math.max(0, count - 1)), roundDistance(targetDistance)].slice(-count);
   }
   if (count === 1) return [roundDistance(longRunDistance)];
   const easy = Math.max(2, longRunDistance * 0.6);
@@ -1503,7 +1509,7 @@ function buildHalfMarathonRunPlan(runs) {
       if (index > 0 && index % cutbackEveryWeeks === cutbackEveryWeeks - 1) longRun *= 0.86;
     }
     longRun = roundDistance(longRun);
-    const distances = runDistancesForWeek(longRun, targetRuns, isRaceWeek);
+    const distances = runDistancesForWeek(longRun, targetRuns, isRaceWeek, targetDistance);
     const weeklyDistance = roundDistance(distances.reduce((sum, distance) => sum + distance, 0));
     weeks.push({
       weekStart,
