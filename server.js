@@ -590,6 +590,15 @@ function activePlan(store) {
   return store.plans.find((plan) => plan.plan_id === store.active_plan_id) || store.plans[0] || null;
 }
 
+function allPlanActivities(store) {
+  return (store.plans || [])
+    .flatMap((plan) => (plan.activities || []).map((activity) => ({
+      ...activity,
+      plan_id: plan.plan_id,
+      week_start_date: plan.week_start_date
+    })));
+}
+
 function inferEquipmentForActivity(activity) {
   const title = String(activity.title || "").toLowerCase();
   if (Array.isArray(activity.equipment) && activity.equipment.length) return activity.equipment;
@@ -1248,16 +1257,15 @@ function mergeHealth(store, body, source = "manual") {
 }
 
 function completedLogDates(store) {
-  const plan = activePlan(store);
-  if (!plan) return [];
-  const planActivitiesById = new Map(plan.activities.map((activity) => [activity.activity_id, activity]));
+  const activities = allPlanActivities(store);
+  const planActivitiesById = new Map(activities.map((activity) => [activity.activity_id, activity]));
   const manualDates = Object.entries(store.completions || {})
     .filter(([, completion]) => completion && completion.completed)
     .map(([activityId, completion]) => {
       const plannedActivity = planActivitiesById.get(activityId);
       return completion.logged_date || (completion.completed_at || "").slice(0, 10) || plannedActivity?.date;
     });
-  const actualDates = (plan.activities || [])
+  const actualDates = activities
     .map((activity) => {
       const actual = actualsForActivity(activity, store)[0];
       return actual?.date || (actual?.start_date || "").slice(0, 10);
@@ -1272,8 +1280,7 @@ function daysBetween(startDateKey, endDateKey) {
 }
 
 function requiredActivitiesByDate(store) {
-  return (store.plans || [])
-    .flatMap((plan) => (plan.activities || []).map((activity) => ({ ...activity, plan_id: plan.plan_id, week_start_date: plan.week_start_date })))
+  return allPlanActivities(store)
     .filter((activity) => activity.required_or_optional === "required" && /^\d{4}-\d{2}-\d{2}$/.test(activity.date))
     .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
 }
@@ -1427,8 +1434,7 @@ function activityDraftFromActual(actual, body = {}) {
 }
 
 function compatibleSameDayActivitiesForActual(actual, store) {
-  const plan = activePlan(store);
-  return (plan?.activities || [])
+  return allPlanActivities(store)
     .filter((activity) => actualDateMatchesActivity(actual, activity))
     .filter((activity) => actualTypeCompatibleWithActivity(actual, activity));
 }

@@ -1172,6 +1172,40 @@ test("createStreak uses logged dates instead of planned dates", () => {
   assert.deepEqual(streak.completed_dates, ["2026-06-18", "2026-06-19"]);
 });
 
+test("createStreak credits imported actuals for required activities outside the active plan", () => {
+  const store = createDefaultState(new Date("2026-06-30T12:00:00"));
+  const oldPlan = store.plans[0];
+  const nextPlan = buildDefaultPlan(new Date("2026-07-06T12:00:00"));
+  store.plans.push(nextPlan);
+  store.active_plan_id = nextPlan.plan_id;
+
+  oldPlan.activities
+    .filter((activity) => activity.required_or_optional === "required" && activity.date < "2026-07-02" && activity.date !== "2026-06-30")
+    .forEach((activity) => {
+      store.completions[activity.activity_id] = {
+        completed: true,
+        completed_at: `${activity.date}T12:00:00.000Z`,
+        logged_date: activity.date,
+        subtasks: {}
+      };
+    });
+
+  store.health.actual_workouts.push({
+    actual_id: "june-30-run",
+    date: "2026-06-30",
+    name: "Outdoor Run",
+    type: "run",
+    duration_minutes: 36.9,
+    distance_miles: 3.11,
+    average_heart_rate: 144
+  });
+
+  const streak = createStreak(store, new Date("2026-07-02T12:00:00"));
+  assert.equal(streak.latest_missed_required_date, null);
+  assert.equal(streak.missed_required_count, 0);
+  assert.ok(streak.completed_dates.includes("2026-06-30"));
+});
+
 test("createStreak reports days and weeks without a required miss", () => {
   const store = createDefaultState(new Date("2026-06-19T12:00:00"));
   store.plans[0].activities
