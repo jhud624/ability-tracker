@@ -1688,3 +1688,83 @@ h1 { max-width: none; margin-bottom: 2px; font-size: 22px; line-height: 1.1; }
 .exercise-total { flex: 0 1 auto; }
 .exercise-last { flex: 1 1 130px; }
 .autosave-status { flex: 0 0 auto; margin-left: auto; }
+
+/* ---------- Collapsible week cards ---------- */
+.activity-card.is-collapsible .activity-main { grid-template-columns: 46px minmax(0, 1fr) 34px; }
+.collapse-toggle {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  align-self: start;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+}
+.collapse-toggle svg {
+  width: 16px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.18s ease;
+}
+.collapse-toggle:hover svg { stroke: var(--ink); }
+.activity-card.is-collapsed .collapse-toggle svg { transform: rotate(-90deg); }
+.activity-card.is-collapsed > *:not(.activity-main) { display: none; }
+.activity-card.is-collapsed .activity-copy > p,
+.activity-card.is-collapsed .equipment-tags { display: none; }
+.collapse-summary {
+  display: none;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.activity-card.is-collapsed .collapse-summary { display: block; }
+
+/* ---------- Stacked run tables on small screens ---------- */
+@media (max-width: 620px) {
+  .activity-card.is-collapsible .activity-main { grid-template-columns: 40px minmax(0, 1fr) 32px; }
+  .collapse-toggle { width: 32px; height: 32px; }
+
+  .run-table {
+    display: grid;
+    gap: 8px;
+    overflow-x: visible;
+    border: 0;
+    background: transparent;
+  }
+  .run-table .run-table-head { display: none; }
+  .run-table .run-table-row {
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    background: var(--raised);
+  }
+  .run-table .run-table-row span[data-label] {
+    color: var(--ink);
+    font-weight: 800;
+    font-size: 13px;
+  }
+  .run-table .run-table-row span[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .run-table .run-table-row span[data-label="Week"],
+  .run-table .run-table-row span[data-label="Date"] { grid-column: 1 / -1; }
+  .run-plan-row.is-current { border-color: rgba(232, 64, 44, 0.45); }
+}
