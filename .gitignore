@@ -1,4 +1,5 @@
 .DS_Store
+node_modules/
 .vercel
 render_workouts/
 *.docx
@@ -6,3 +7,5 @@ render_workouts/
 *.png
 *.py
 ~$*
+data/
+.env*

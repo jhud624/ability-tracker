@@ -1,0 +1,26 @@
+{
+  "crons": [
+    {
+      "path": "/api/backups/create",
+      "schedule": "20 8 * * *"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/mcp",
+      "destination": "/api/mcp.js"
+    },
+    {
+      "source": "/.well-known/(.*)",
+      "destination": "/api/[...path].js"
+    },
+    {
+      "source": "/oauth/(.*)",
+      "destination": "/api/[...path].js"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/[...path].js"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "coach-loop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first workout coaching backend and web dashboard.",
+  "scripts": {
+    "mcp": "node mcp/coach-loop-mcp.mjs",
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@upstash/redis": "^1.38.0",
+    "zod": "^4.4.3"
+  }
+}
