@@ -56,6 +56,7 @@ const elements = {
 let unlockResolver = null;
 const EXERCISE_DRAFT_PREFIX = "coach_loop_exercise_log_draft:";
 const activeAutosaveFlushers = new Set();
+const weekExpandedActivities = new Set();
 
 const movementCatalog = [
   {
@@ -1038,6 +1039,35 @@ function renderActivity(activity, options = {}) {
   const actualsBlock = renderActivityActuals(activity);
   if (actualsBlock) activityMain.after(actualsBlock);
 
+  if (options.collapsible) {
+    node.classList.add("is-collapsible");
+    const expanded = weekExpandedActivities.has(activity.activity_id);
+    node.classList.toggle("is-collapsed", !expanded);
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "collapse-toggle";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-label", `Toggle details: ${activity.title}`);
+    toggle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>`;
+    toggle.addEventListener("click", () => {
+      const nowExpanded = node.classList.contains("is-collapsed");
+      node.classList.toggle("is-collapsed", !nowExpanded);
+      toggle.setAttribute("aria-expanded", String(nowExpanded));
+      if (nowExpanded) weekExpandedActivities.add(activity.activity_id);
+      else weekExpandedActivities.delete(activity.activity_id);
+    });
+    activityMain.append(toggle);
+
+    const countableSubtasks = (activity.subtasks || []).filter((subtask) => !subtaskIsNote(subtask));
+    if (countableSubtasks.length) {
+      const done = countableSubtasks.filter((subtask) => activity.completion?.subtasks?.[subtask.subtask_id]).length;
+      const summary = document.createElement("div");
+      summary.className = "collapse-summary";
+      summary.textContent = `${done}/${countableSubtasks.length} exercises done`;
+      node.querySelector(".activity-copy").append(summary);
+    }
+  }
+
   const feedback = activity.feedback || {};
   ["difficulty", "back_pain"].forEach((field) => {
     const input = form.elements[field];
@@ -1124,7 +1154,7 @@ function renderWeek() {
     const heading = document.createElement("h3");
     heading.textContent = formatDate(date, { weekday: "long" });
     column.append(heading);
-    dateActivities.forEach((activity) => column.append(renderActivity(activity)));
+    dateActivities.forEach((activity) => column.append(renderActivity(activity, { collapsible: true })));
     elements.weekGrid.append(column);
   });
 }
@@ -1706,11 +1736,11 @@ function renderRunPlanTable(plan, runs) {
     const row = document.createElement("div");
     row.className = `run-table-row run-plan-row${index === 0 ? " is-current" : ""}${week.isRaceWeek ? " is-race-week" : ""}`;
     row.innerHTML = `
-      <span>${escapeHtml(formatDate(week.weekStart))}${week.isRaceWeek ? " · race" : ""}</span>
-      <span>${escapeHtml(String(week.targetRuns))}</span>
-      <span>${escapeHtml(week.distances.map((distance) => `${distance} mi`).join(" / "))}</span>
-      <span>${escapeHtml(`${compactNumber(week.weeklyDistance, 1)} mi`)}</span>
-      <span>${escapeHtml(actual.runs.length ? `${actual.runs.length} runs · ${compactNumber(actual.distance, 1)} mi` : "-")}</span>
+      <span data-label="Week">${escapeHtml(formatDate(week.weekStart))}${week.isRaceWeek ? " · race" : ""}</span>
+      <span data-label="Runs">${escapeHtml(String(week.targetRuns))}</span>
+      <span data-label="Distances">${escapeHtml(week.distances.map((distance) => `${distance} mi`).join(" / "))}</span>
+      <span data-label="Total">${escapeHtml(`${compactNumber(week.weeklyDistance, 1)} mi`)}</span>
+      <span data-label="Actual">${escapeHtml(actual.runs.length ? `${actual.runs.length} runs · ${compactNumber(actual.distance, 1)} mi` : "-")}</span>
     `;
     table.append(row);
   });
@@ -1784,11 +1814,11 @@ function renderRunTracking() {
     const row = document.createElement("div");
     row.className = "run-table-row";
     row.innerHTML = `
-      <span>${escapeHtml(formatDate(run.date))}</span>
-      <span>${escapeHtml(run.distance_miles ? `${compactNumber(run.distance_miles, 2)} mi` : "-")}</span>
-      <span>${escapeHtml(formatPaceFromActual(run) || "-")}</span>
-      <span>${escapeHtml(`${run.average_heart_rate ? `${compactNumber(run.average_heart_rate, 0)} avg` : "-"}${run.max_heart_rate ? ` / ${compactNumber(run.max_heart_rate, 0)} max` : ""}`)}</span>
-      <span>${escapeHtml(run.location || (run.route_map || run.route_shape ? "route saved" : "-"))}</span>
+      <span data-label="Date">${escapeHtml(formatDate(run.date))}</span>
+      <span data-label="Distance">${escapeHtml(run.distance_miles ? `${compactNumber(run.distance_miles, 2)} mi` : "-")}</span>
+      <span data-label="Pace">${escapeHtml(formatPaceFromActual(run) || "-")}</span>
+      <span data-label="HR">${escapeHtml(`${run.average_heart_rate ? `${compactNumber(run.average_heart_rate, 0)} avg` : "-"}${run.max_heart_rate ? ` / ${compactNumber(run.max_heart_rate, 0)} max` : ""}`)}</span>
+      <span data-label="Location">${escapeHtml(run.location || (run.route_map || run.route_shape ? "route saved" : "-"))}</span>
     `;
     table.append(row);
   });
