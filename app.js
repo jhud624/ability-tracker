@@ -350,6 +350,11 @@ function exerciseSupportsDuration(title) {
   return /\b(timer|hold|stretch|plank|walk|warmup|warm-up|cooldown|cool-down|reset|circuit|breathing|mobility|sec|second|seconds|min|minute|minutes)\b/i.test(title);
 }
 
+function exerciseLogMode(title) {
+  if (!exerciseSupportsDuration(title)) return "strength";
+  return /\b(sled|carry|carries|farmer|weighted|vest|drag)\b/i.test(title) ? "loaded-timed" : "timed";
+}
+
 function formatDuration(seconds) {
   const value = Number(seconds || 0);
   if (!value) return "";
@@ -575,6 +580,7 @@ function createExerciseLogControls(activity, exercise, log = {}) {
   }
   swapLabel.append(swap);
 
+  const mode = exerciseLogMode(selectedTitle);
   const weight = createExerciseNumberField(exercise, "weight_lbs", "total lb", {
     title: "Total weight used per rep, including both sides or both dumbbells.",
     step: "0.5",
@@ -583,7 +589,7 @@ function createExerciseLogControls(activity, exercise, log = {}) {
     ariaLabel: `Total weight used in pounds for ${selectedTitle}`,
     value: log.weight_lbs
   });
-  const sets = createExerciseNumberField(exercise, "sets", "sets", {
+  const sets = createExerciseNumberField(exercise, "sets", mode === "strength" ? "sets" : "rounds", {
     ariaLabel: `Sets for ${selectedTitle}`,
     value: log.sets
   });
@@ -591,11 +597,47 @@ function createExerciseLogControls(activity, exercise, log = {}) {
     ariaLabel: `Reps per set for ${selectedTitle}`,
     value: log.reps
   });
-  const duration = createExerciseNumberField(exercise, "duration_seconds", "time sec", {
-    ariaLabel: `Time in seconds for ${selectedTitle}`,
-    value: log.duration_seconds
+  weight.label.classList.add("field-weight");
+  sets.label.classList.add("field-sets");
+  reps.label.classList.add("field-reps");
+
+  const timeLabel = document.createElement("label");
+  timeLabel.className = "duration-field";
+  timeLabel.textContent = "time";
+  const timeWrap = document.createElement("span");
+  timeWrap.className = "duration-inputs";
+  const timeInput = document.createElement("input");
+  timeInput.name = "duration_value";
+  timeInput.type = "number";
+  timeInput.min = "0";
+  timeInput.step = "0.5";
+  timeInput.inputMode = "decimal";
+  timeInput.setAttribute("aria-label", `Time for ${selectedTitle}`);
+  const timeUnit = document.createElement("select");
+  timeUnit.name = "duration_unit";
+  timeUnit.setAttribute("aria-label", `Time unit for ${selectedTitle}`);
+  ["min", "sec"].forEach((unit) => {
+    const option = document.createElement("option");
+    option.value = unit;
+    option.textContent = unit;
+    timeUnit.append(option);
   });
-  duration.label.classList.add("duration-field");
+  const savedSeconds = Number(log.duration_seconds || 0);
+  if (savedSeconds) {
+    if (savedSeconds % 60 === 0) {
+      timeInput.value = savedSeconds / 60;
+      timeUnit.value = "min";
+    } else {
+      timeInput.value = savedSeconds;
+      timeUnit.value = "sec";
+    }
+  } else {
+    timeUnit.value = /\b(sec|second|seconds)\b/i.test(selectedTitle) ? "sec" : "min";
+    const suggested = selectedTitle.match(/(\d+(?:\.\d+)?)\s*(?:min|minute|sec|second)/i);
+    if (suggested) timeInput.placeholder = suggested[1];
+  }
+  timeWrap.append(timeInput, timeUnit);
+  timeLabel.append(timeWrap);
 
   const total = document.createElement("output");
   total.className = "exercise-total";
@@ -609,13 +651,15 @@ function createExerciseLogControls(activity, exercise, log = {}) {
   setAutosaveStatus(status, "Autosaves");
 
   function payload() {
+    const timeValue = timeInput.value === "" ? "" :
+      String(Math.round(Number(timeInput.value) * (timeUnit.value === "min" ? 60 : 1)));
     return {
       exercise_id: exercise.exercise_id,
       title: swap.value || selectedTitle,
       weight_lbs: weight.input.value,
       sets: sets.input.value,
       reps: reps.input.value,
-      duration_seconds: duration.input.value
+      duration_seconds: timeValue
     };
   }
 
@@ -628,18 +672,23 @@ function createExerciseLogControls(activity, exercise, log = {}) {
     last.textContent = lastExerciseLogText(lastExerciseLogFor(activity, { ...exercise, title: current.title }));
   }
 
-  const durationElements = exerciseSupportsDuration(selectedTitle) ? [duration.label] : [];
+  const fieldsByMode = {
+    strength: [weight.label, sets.label, reps.label],
+    timed: [timeLabel, sets.label],
+    "loaded-timed": [timeLabel, weight.label, sets.label]
+  };
 
   return {
-    elements: [swapLabel, weight.label, sets.label, reps.label, ...durationElements, total, last, status],
-    inputs: [swap, weight.input, sets.input, reps.input, duration.input],
+    elements: [swapLabel, ...fieldsByMode[mode], total, last, status],
+    inputs: [swap, weight.input, sets.input, reps.input, timeInput, timeUnit],
+    swap,
     payload,
     status,
     updateTotal
   };
 }
 
-function attachExerciseLogAutosave(row, activity, controls, savedLog = {}) {
+function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog = {}) {
   let timer = null;
   let lastSaved = exerciseLogSignature(savedLog);
 
@@ -681,6 +730,21 @@ function attachExerciseLogAutosave(row, activity, controls, savedLog = {}) {
     });
     input.addEventListener("change", () => scheduleAutosave(0));
     input.addEventListener("blur", () => scheduleAutosave(0));
+  });
+
+  controls.swap.addEventListener("change", () => {
+    // Swapping to an alternative movement can change which fields apply
+    // (e.g. curl -> weighted carry), so rebuild this row's controls from the
+    // draft before flushing — the flush clears the draft on success.
+    saveDraftAndUpdate();
+    window.setTimeout(async () => {
+      activeAutosaveFlushers.delete(flushNow);
+      controls.elements.forEach((el) => el.remove());
+      const rebuilt = appendExerciseLogControls(row, activity, exercise);
+      await flushNow();
+      rebuilt.status.textContent = controls.status.textContent;
+      rebuilt.status.className = controls.status.className;
+    }, 0);
   });
 
   row.addEventListener("submit", async (event) => {
@@ -788,7 +852,7 @@ function renderExerciseLogs(activity, container) {
     title.textContent = exercise.title;
 
     const controls = createExerciseLogControls(activity, exercise, log);
-    attachExerciseLogAutosave(row, activity, controls, savedLog);
+    attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);
     row.append(title, ...controls.elements);
     container.append(row);
     controls.updateTotal();
@@ -804,10 +868,11 @@ function appendExerciseLogControls(row, activity, exercise) {
     ...(draft || {})
   };
   const controls = createExerciseLogControls(activity, exercise, log);
-  attachExerciseLogAutosave(row, activity, controls, savedLog);
+  attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);
   row.append(...controls.elements);
   controls.updateTotal();
   if (draft) setAutosaveStatus(controls.status, "Draft", "is-saving");
+  return controls;
 }
 
 function actualLabel(actual) {

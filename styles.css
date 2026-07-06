@@ -1,20 +1,27 @@
 :root {
-  --ink: #182321;
-  --muted: #5c6b66;
-  --paper: #f4f1e8;
-  --surface: #fffdf8;
-  --line: #d9ded7;
-  --green: #1f6f5b;
-  --green-soft: #dcece5;
-  --blue: #2f5f9f;
-  --orange: #e96d3f;
-  --yellow: #f4bd4d;
-  --danger: #b43333;
-  --shadow: 0 18px 50px rgba(24, 35, 33, 0.09);
+  /* Dark athletic palette: --ink is now light text, --paper the near-black bg,
+     --green doubles as the single red accent so done-states and primary actions restyle in one place. */
+  --ink: #efe8d8;
+  --muted: #94948c;
+  --paper: #0a0a0b;
+  --surface: #141416;
+  --raised: #1b1b1e;
+  --sunken: #101012;
+  --line: rgba(255, 255, 255, 0.13);
+  --line-soft: rgba(255, 255, 255, 0.07);
+  --green: #e8402c;
+  --green-soft: rgba(232, 64, 44, 0.14);
+  --blue: #cfc8b8;
+  --orange: #e8402c;
+  --yellow: #d9a63f;
+  --danger: #ff6b3d;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  --display: "Anton", "Arial Narrow", sans-serif;
   color: var(--ink);
   background: var(--paper);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Archivo", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -23,7 +30,7 @@ body { min-width: 320px; margin: 0; background: var(--paper); }
 button, input, textarea { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible {
-  outline: 3px solid rgba(47, 95, 159, 0.28);
+  outline: 3px solid rgba(232, 64, 44, 0.55);
   outline-offset: 3px;
 }
 
@@ -51,9 +58,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
   height: 44px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
-  background: var(--ink);
-  color: white;
+  border-radius: 2px;
+  background: var(--green);
+  color: var(--ink);
   font-size: 14px;
   font-weight: 900;
 }
@@ -72,7 +79,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
   min-height: 38px;
   padding: 8px 12px;
   color: var(--muted);
-  background: rgba(255, 253, 248, 0.7);
+  background: var(--raised);
 }
 
 .write-access-button.is-active {
@@ -89,7 +96,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(255, 253, 248, 0.7);
+  background: var(--raised);
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
@@ -122,10 +129,10 @@ main {
   gap: 32px;
   align-items: end;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background:
-    linear-gradient(135deg, rgba(255, 253, 248, 0.96), rgba(255, 253, 248, 0.86)),
-    linear-gradient(90deg, rgba(31, 111, 91, 0.16), rgba(244, 189, 77, 0.18));
+    linear-gradient(135deg, rgba(20, 20, 22, 0.92), rgba(20, 20, 22, 0.99)),
+    linear-gradient(90deg, rgba(232, 64, 44, 0.5), rgba(232, 64, 44, 0.05));
   box-shadow: var(--shadow);
 }
 
@@ -172,7 +179,7 @@ h1 {
   display: grid;
   align-content: center;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--surface);
 }
 
@@ -208,7 +215,7 @@ h1 {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   cursor: pointer;
   font-weight: 900;
   transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
@@ -217,21 +224,21 @@ h1 {
 .tab-button {
   flex: 0 0 auto;
   padding: 10px 16px;
-  background: rgba(255, 253, 248, 0.72);
+  background: var(--raised);
   color: var(--muted);
 }
 
 .tab-button.is-active {
   border-color: var(--ink);
   background: var(--ink);
-  color: white;
+  color: var(--paper);
 }
 
 .primary-button {
   padding: 10px 16px;
   border-color: var(--green);
   background: var(--green);
-  color: white;
+  color: var(--ink);
 }
 
 .ghost-button {
@@ -277,8 +284,8 @@ h3 {
   margin-bottom: 14px;
   padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 253, 248, 0.72);
+  border-radius: 2px;
+  background: var(--raised);
 }
 
 .switcher-row {
@@ -292,14 +299,14 @@ h3 {
   min-width: 0;
   padding: 18px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--surface);
-  box-shadow: 0 10px 28px rgba(24, 35, 33, 0.05);
+  box-shadow: none;
 }
 
 .activity-card.is-done {
-  border-color: rgba(31, 111, 91, 0.36);
-  background: #f6fbf8;
+  border-color: rgba(232, 64, 44, 0.4);
+  background: rgba(232, 64, 44, 0.06);
 }
 
 .activity-main {
@@ -314,9 +321,9 @@ h3 {
   height: 46px;
   display: grid;
   place-items: center;
-  border: 2px solid #a9b7b2;
-  border-radius: 8px;
-  background: white;
+  border: 2px solid var(--line);
+  border-radius: 2px;
+  background: var(--raised);
   cursor: pointer;
 }
 
@@ -324,7 +331,7 @@ h3 {
   content: "";
   width: 17px;
   height: 9px;
-  border: solid white;
+  border: solid var(--ink);
   border-width: 0 0 3px 3px;
   opacity: 0;
   transform: rotate(-45deg) translate(1px, -2px);
@@ -385,8 +392,8 @@ h3 {
 .actual-card {
   padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fffdf8;
+  border-radius: 2px;
+  background: var(--surface);
 }
 
 .actual-card-compact {
@@ -424,8 +431,8 @@ h3 {
   min-height: 26px;
   padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
+  border-radius: 2px;
+  background: var(--raised);
   color: var(--ink);
   font-size: 12px;
   font-weight: 850;
@@ -449,7 +456,7 @@ h3 {
   padding: 18px;
   border: 1px solid var(--line);
   border-left: 5px solid var(--blue);
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--surface);
 }
 
@@ -507,8 +514,8 @@ h3 {
   min-height: 100px;
   padding: 14px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 253, 248, 0.8);
+  border-radius: 2px;
+  background: var(--raised);
 }
 
 .run-metric-grid span {
@@ -563,7 +570,7 @@ h3 {
 .run-table {
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--surface);
 }
 
@@ -583,7 +590,7 @@ h3 {
 }
 
 .run-table-head {
-  background: #f8faf6;
+  background: var(--raised);
   color: var(--ink);
   font-size: 11px;
   font-weight: 900;
@@ -591,12 +598,12 @@ h3 {
 }
 
 .run-plan-row.is-current {
-  background: #f6fbf8;
+  background: rgba(232, 64, 44, 0.06);
 }
 
 .run-plan-row.is-race-week {
   color: var(--ink);
-  background: #fff6df;
+  background: rgba(217, 166, 63, 0.12);
 }
 
 .run-card-list {
@@ -614,9 +621,9 @@ h3 {
   min-width: 0;
   padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--surface);
-  box-shadow: 0 10px 28px rgba(24, 35, 33, 0.05);
+  box-shadow: none;
 }
 
 .library-card h3 {
@@ -645,8 +652,8 @@ h3 {
   align-items: stretch;
   padding: 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f8faf6;
+  border-radius: 2px;
+  background: var(--raised);
   color: var(--ink);
   text-decoration: none;
 }
@@ -660,7 +667,7 @@ h3 {
   display: grid;
   place-items: center;
   overflow: hidden;
-  border-radius: 6px;
+  border-radius: 2px;
   background: var(--green-soft);
   color: var(--green);
   font-weight: 900;
@@ -696,8 +703,8 @@ h3 {
   aspect-ratio: 260 / 160;
   min-height: 0;
   overflow: hidden;
-  border-radius: 6px;
-  background: #e7ece8;
+  border-radius: 2px;
+  background: var(--raised);
 }
 
 .map-thumb svg {
@@ -712,8 +719,8 @@ h3 {
   right: 5px;
   bottom: 4px;
   padding: 2px 4px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.82);
+  border-radius: 2px;
+  background: rgba(10, 10, 11, 0.78);
   color: var(--muted);
   font-size: 10px;
   font-weight: 800;
@@ -738,8 +745,8 @@ h3 {
   min-width: 0;
   padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
+  border-radius: 2px;
+  background: var(--raised);
 }
 
 .actual-chart-label {
@@ -796,10 +803,10 @@ h3 {
 .match-warning {
   margin-bottom: 10px;
   padding: 8px 10px;
-  border: 1px solid #e0c36a;
-  border-radius: 6px;
-  background: #fff8dc;
-  color: #67520f;
+  border: 1px solid rgba(217, 166, 63, 0.5);
+  border-radius: 2px;
+  background: rgba(217, 166, 63, 0.12);
+  color: #e5c377;
   font-size: 12px;
   font-weight: 800;
 }
@@ -857,8 +864,8 @@ h3 {
   margin: 4px 0;
   padding: 10px 12px;
   border-left: 3px solid var(--orange);
-  border-radius: 6px;
-  background: #fff6df;
+  border-radius: 2px;
+  background: rgba(217, 166, 63, 0.12);
   color: var(--ink);
   font-size: 13px;
   font-weight: 850;
@@ -866,13 +873,14 @@ h3 {
 }
 
 .exercise-entry-row {
-  grid-template-columns: 20px minmax(150px, 1fr) minmax(130px, 0.75fr) minmax(80px, 0.45fr) minmax(58px, 0.35fr) minmax(58px, 0.35fr) minmax(70px, 0.4fr) minmax(78px, auto) minmax(92px, auto) auto;
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   align-items: end;
-  padding: 8px 10px;
+  padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f8faf6;
+  border-radius: 2px;
+  background: var(--raised);
 }
 
 .exercise-entry-row > input[type="checkbox"] {
@@ -900,19 +908,19 @@ h3 {
 }
 
 .exercise-log-row {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(130px, 0.75fr) minmax(80px, 0.45fr) minmax(58px, 0.35fr) minmax(58px, 0.35fr) minmax(70px, 0.4fr) minmax(78px, auto) minmax(92px, auto) auto;
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   align-items: end;
   padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f8faf6;
+  border-radius: 2px;
+  background: var(--raised);
 }
 
 .exercise-log-title {
   min-width: 0;
-  padding-bottom: 10px;
+  flex: 1 1 100%;
   color: var(--ink);
   font-size: 13px;
   font-weight: 900;
@@ -946,8 +954,8 @@ h3 {
   justify-content: flex-end;
   padding: 7px 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
+  border-radius: 2px;
+  background: var(--raised);
   color: var(--green);
   font-size: 13px;
   font-weight: 900;
@@ -986,7 +994,7 @@ h3 {
 }
 
 .autosave-status.is-error {
-  color: #b3261e;
+  color: var(--danger);
 }
 
 .exercise-log-row .ghost-button,
@@ -1021,8 +1029,8 @@ label {
 input, select, textarea {
   width: 100%;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
+  border-radius: 2px;
+  background: var(--raised);
   color: var(--ink);
 }
 
@@ -1164,9 +1172,9 @@ textarea {
 .gear-card {
   padding: 18px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--surface);
-  box-shadow: 0 10px 28px rgba(24, 35, 33, 0.05);
+  box-shadow: none;
 }
 
 .gear-card-top {
@@ -1193,9 +1201,9 @@ textarea {
 .tool-panel {
   padding: 20px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--surface);
-  box-shadow: 0 10px 28px rgba(24, 35, 33, 0.05);
+  box-shadow: none;
 }
 
 .tool-panel pre {
@@ -1204,8 +1212,8 @@ textarea {
   padding: 14px;
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f7f8f5;
+  border-radius: 2px;
+  background: var(--sunken);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
@@ -1220,8 +1228,8 @@ textarea {
 
 .actual-details {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 253, 248, 0.7);
+  border-radius: 2px;
+  background: var(--raised);
 }
 
 .actual-details summary {
@@ -1235,13 +1243,13 @@ textarea {
 .actual-details .actual-card {
   border: 0;
   border-top: 1px solid var(--line);
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 2px 2px;
   box-shadow: none;
 }
 
 code {
   padding: 1px 4px;
-  border-radius: 5px;
+  border-radius: 2px;
   background: var(--green-soft);
   color: var(--ink);
 }
@@ -1254,9 +1262,9 @@ code {
   max-width: min(460px, calc(100% - 40px));
   margin: 0;
   padding: 12px 14px;
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--ink);
-  color: white;
+  color: var(--paper);
   font-weight: 800;
   box-shadow: var(--shadow);
 }
@@ -1271,7 +1279,7 @@ code {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(24, 35, 33, 0.45);
+  background: rgba(0, 0, 0, 0.7);
 }
 
 .modal-backdrop[hidden] { display: none; }
@@ -1280,7 +1288,7 @@ code {
   width: min(430px, 100%);
   padding: 22px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background: var(--surface);
   box-shadow: var(--shadow);
 }
@@ -1324,9 +1332,9 @@ code {
 
 .empty-state {
   padding: 22px;
-  border: 1px dashed #aab6b2;
-  border-radius: 8px;
-  background: rgba(255, 253, 248, 0.6);
+  border: 1px dashed var(--line);
+  border-radius: 2px;
+  background: rgba(27, 27, 30, 0.6);
   color: var(--muted);
 }
 
@@ -1580,3 +1588,103 @@ code {
     transition: none !important;
   }
 }
+
+/* ---------- Athletic dark theme layer ---------- */
+:root {
+  /* Distinct success green reserved for status semantics (backend dot, saved state,
+     on-track run status) so they stay glanceable next to the red accent. */
+  --success: #4caf6e;
+}
+
+h1, h2, h3,
+.metric-grid span,
+.run-progress strong,
+.brand-mark {
+  font-family: var(--display);
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+h3 { font-size: 19px; }
+.brand-mark { font-size: 18px; }
+.brand strong { text-transform: uppercase; letter-spacing: 0.05em; }
+.brand small { letter-spacing: 0.04em; }
+
+.eyebrow { letter-spacing: 0.14em; }
+.activity-meta { letter-spacing: 0.1em; }
+label { letter-spacing: 0.08em; }
+.metric-grid small,
+.run-metric-grid small,
+.day-column > h3 { letter-spacing: 0.1em; }
+
+.tab-button, .primary-button, .ghost-button {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.backend-badge, .write-access-button {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.backend-badge.is-connected .status-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 4px rgba(76, 175, 110, 0.16);
+}
+
+.run-status-panel.is-good { border-left-color: var(--success); }
+.autosave-status.is-saved { color: var(--success); }
+.autosave-status.is-saving { color: var(--yellow); }
+
+.run-progress meter { accent-color: var(--green); }
+
+.duration-inputs {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.duration-inputs input { min-width: 0; }
+.duration-inputs select {
+  width: 74px;
+  flex: 0 0 auto;
+}
+
+/* ---------- Compact header ---------- */
+.topbar { padding: 8px 0; }
+.brand-mark { width: 30px; height: 30px; font-size: 15px; }
+.brand strong { font-size: 14px; }
+.brand small { display: none; }
+.write-access-button, .backend-badge { min-height: 32px; padding: 6px 10px; }
+
+.overview {
+  min-height: 0;
+  padding: 12px 16px;
+  gap: 10px 18px;
+  align-items: center;
+}
+.overview .eyebrow { margin-bottom: 3px; font-size: 11px; }
+h1 { max-width: none; margin-bottom: 2px; font-size: 22px; line-height: 1.1; }
+.overview p:last-child { font-size: 13px; line-height: 1.4; }
+.metric-grid { gap: 6px; }
+.metric-grid article { min-height: 0; padding: 7px 9px; }
+.metric-grid span { font-size: 17px; }
+.metric-grid small { margin-top: 3px; font-size: 9px; line-height: 1.15; }
+.tabbar { padding: 10px 0; }
+.section-heading { margin: 14px 0 12px; }
+
+/* ---------- Wrapping exercise log rows ----------
+   Rows hold a variable set of fields (strength vs timed vs loaded),
+   so they wrap with flex instead of fixed grid tracks. */
+.exercise-entry-row > input[type="checkbox"] { flex: 0 0 auto; }
+.exercise-entry-row .subtask-title { flex: 1 1 calc(100% - 34px); }
+.exercise-swap-label { flex: 2 1 200px; }
+.field-weight { flex: 1 1 84px; }
+.field-sets, .field-reps { flex: 1 1 58px; }
+.duration-field { flex: 2 1 150px; }
+.exercise-total { flex: 0 1 auto; }
+.exercise-last { flex: 1 1 130px; }
+.autosave-status { flex: 0 0 auto; margin-left: auto; }
