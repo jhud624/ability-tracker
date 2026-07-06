@@ -15,6 +15,8 @@ const elements = {
   metricStreak: document.querySelector("#metric-streak"),
   metricWeek: document.querySelector("#metric-week"),
   tabButtons: [...document.querySelectorAll(".tab-button")],
+  weightBanner: document.querySelector("#weight-banner"),
+  weightTotal: document.querySelector("#weight-total"),
   views: [...document.querySelectorAll(".view")],
   refreshButton: document.querySelector("#refresh-button"),
   todaySwitchForm: document.querySelector("#today-switch-form"),
@@ -300,6 +302,11 @@ function updateOverview() {
   elements.metricRuns.textContent = String(runs.length);
   elements.metricStreak.textContent = String(state.data?.streak?.days_without_miss || 0);
   elements.metricWeek.textContent = String(state.data?.streak?.weeks_without_miss || 0);
+
+  const weightMoved = items.reduce((sum, activity) =>
+    sum + Object.values(activity.exercise_logs || {}).reduce((subtotal, log) => subtotal + exerciseLogTotal(log), 0), 0);
+  elements.weightBanner.hidden = !weightMoved;
+  elements.weightTotal.textContent = Math.round(weightMoved).toLocaleString();
 }
 
 function activityDescription(activity) {
@@ -345,6 +352,12 @@ function subtaskIsNote(subtask) {
   const kind = String(subtask.kind || subtask.type || "").toLowerCase();
   const title = String(subtask.title || "");
   return kind === "note" || /^timer\s*:/i.test(title) || /^note\s*:/i.test(title);
+}
+
+function subtaskIsCheckOnly(title) {
+  // Admin-style items ("Log difficulty...", "Record soreness") get a checkbox
+  // but no weight/time logging fields.
+  return /^\s*(log|note|record|journal|rate|review)\b/i.test(String(title || ""));
 }
 
 function exerciseSupportsDuration(title) {
@@ -813,6 +826,34 @@ async function flushActiveAutosaves() {
   await Promise.allSettled(flushers.map((flush) => flush()));
 }
 
+function openLibraryForExercise(title) {
+  const key = normalizedExerciseKey(title);
+  const tab = elements.tabButtons.find((button) => button.dataset.view === "library-view");
+  if (tab) tab.click();
+  window.setTimeout(() => {
+    const card = document.querySelector(`.movement-card[data-movement-key="${CSS.escape(key)}"]`);
+    if (!card) return;
+    card.scrollIntoView({ behavior: "instant", block: "center" });
+    card.classList.add("is-highlighted");
+    window.setTimeout(() => card.classList.remove("is-highlighted"), 2600);
+  }, 30);
+}
+
+function createLibraryJumpButton(title) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "lib-link";
+  button.title = "Open in Workout Library";
+  button.setAttribute("aria-label", `Movement guide for ${title}`);
+  button.textContent = "?";
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openLibraryForExercise(title);
+  });
+  return button;
+}
+
 function exerciseRows(activity) {
   const subtasks = activity.subtasks || [];
   if (subtasks.length) {
@@ -851,6 +892,7 @@ function renderExerciseLogs(activity, container) {
     const title = document.createElement("div");
     title.className = "exercise-log-title";
     title.textContent = exercise.title;
+    title.append(createLibraryJumpButton(exercise.title));
 
     const controls = createExerciseLogControls(activity, exercise, log);
     attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);
@@ -1013,8 +1055,9 @@ function renderActivity(activity, options = {}) {
       subtaskList.append(note);
       return;
     }
-    const row = usesExerciseVolume ? document.createElement("form") : document.createElement("label");
-    row.className = usesExerciseVolume ? "subtask-row exercise-entry-row" : "subtask-row";
+    const loggable = usesExerciseVolume && !subtaskIsCheckOnly(subtask.title);
+    const row = loggable ? document.createElement("form") : document.createElement("label");
+    row.className = loggable ? "subtask-row exercise-entry-row" : "subtask-row";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = Boolean(activity.completion?.subtasks?.[subtask.subtask_id]);
@@ -1023,7 +1066,8 @@ function renderActivity(activity, options = {}) {
     span.className = "subtask-title";
     span.textContent = subtask.title;
     row.append(checkbox, span);
-    if (usesExerciseVolume) {
+    if (loggable) {
+      row.append(createLibraryJumpButton(subtask.title));
       appendExerciseLogControls(row, activity, {
         exercise_id: subtask.subtask_id,
         title: subtask.title
@@ -1197,6 +1241,7 @@ function renderLibrary() {
       const reference = movementReference(movement.title);
       const link = document.createElement("a");
       link.className = "movement-card";
+      link.dataset.movementKey = normalizedExerciseKey(movement.title);
       link.href = reference.videoId ? `https://www.youtube.com/watch?v=${reference.videoId}` : youtubeSearchUrl(movement.title);
       link.target = "_blank";
       link.rel = "noreferrer";
@@ -1731,6 +1776,30 @@ function renderRunPlanTable(plan, runs) {
       <span>Actual</span>
     </div>
   `;
+  if (plan.weeks.length) {
+    // The generated plan starts at the current week; surface recent past
+    // weeks that already have logged runs so history isn't invisible.
+    const pastWeeks = [];
+    let cursor = addDays(plan.weeks[0].weekStart, -7);
+    for (let i = 0; i < 8; i += 1) {
+      const summary = runWeekSummary(runs, cursor);
+      if (summary.runs.length) pastWeeks.unshift(summary);
+      cursor = addDays(cursor, -7);
+    }
+    pastWeeks.forEach((summary) => {
+      const row = document.createElement("div");
+      row.className = "run-table-row run-plan-row is-past";
+      row.innerHTML = `
+        <span data-label="Week">${escapeHtml(formatDate(summary.weekStart))} · logged</span>
+        <span data-label="Runs">${escapeHtml(String(summary.runs.length))}</span>
+        <span data-label="Distances">${escapeHtml(summary.runs.slice().reverse().map((run) => `${compactNumber(run.distance_miles || 0, 1)} mi`).join(" / "))}</span>
+        <span data-label="Total">${escapeHtml(`${compactNumber(summary.distance, 1)} mi`)}</span>
+        <span data-label="Actual">${escapeHtml(`${summary.runs.length} runs · ${compactNumber(summary.distance, 1)} mi`)}</span>
+      `;
+      table.append(row);
+    });
+  }
+
   plan.weeks.forEach((week, index) => {
     const actual = runWeekSummary(runs, week.weekStart);
     const row = document.createElement("div");

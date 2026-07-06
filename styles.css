@@ -1768,3 +1768,81 @@ h1 { max-width: none; margin-bottom: 2px; font-size: 22px; line-height: 1.1; }
   .run-table .run-table-row span[data-label="Date"] { grid-column: 1 / -1; }
   .run-plan-row.is-current { border-color: rgba(232, 64, 44, 0.45); }
 }
+
+/* ---------- Density + overflow pass ---------- */
+/* Long <select> option text must never set the row's minimum width. */
+input, select, textarea { min-width: 0; max-width: 100%; }
+
+.exercise-last:empty { display: none; }
+.autosave-status { min-height: 0; }
+.activity-list { gap: 10px; }
+.subtask-list { gap: 8px; margin-top: 12px; }
+.exercise-log-list { margin-top: 12px; }
+.feedback-grid { margin-top: 12px; padding-top: 12px; }
+
+/* ---------- Weight moved banner ---------- */
+.weight-banner {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+.weight-banner-value {
+  font-family: var(--display);
+  font-size: 30px;
+  line-height: 1;
+  color: var(--green);
+  letter-spacing: 0.02em;
+}
+.weight-banner-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ---------- Library jump ---------- */
+.lib-link {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  align-self: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition: 0.15s ease;
+}
+.lib-link:hover { border-color: var(--green); color: var(--green); }
+.exercise-entry-row .subtask-title { flex: 1 1 calc(100% - 80px); }
+.exercise-log-title .lib-link { margin-left: 8px; vertical-align: middle; }
+.movement-card.is-highlighted {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(232, 64, 44, 0.35);
+}
+
+/* ---------- Past weeks in run plan ---------- */
+.run-plan-row.is-past { color: var(--muted); background: var(--sunken); }
+.run-plan-row.is-past span[data-label] { color: var(--muted); }
+
+/* ---------- Tighter phone spacing ---------- */
+@media (max-width: 620px) {
+  .exercise-entry-row, .exercise-log-row { padding: 9px; gap: 7px 9px; }
+  .activity-card { padding: 12px; }
+  .activity-list { gap: 8px; }
+  .subtask-list, .exercise-log-list { gap: 7px; margin-top: 10px; }
+  .autosave-status { font-size: 10px; }
+  .exercise-log-row label, .exercise-entry-row label { gap: 3px; }
+  .feedback-grid { margin-top: 10px; padding-top: 10px; }
+  .switcher-panel { padding: 12px; }
+  main { padding-bottom: 28px; }
+}
