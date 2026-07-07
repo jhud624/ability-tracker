@@ -23,6 +23,7 @@ const elements = {
   todaySwitchSelect: document.querySelector("#today-switch-select"),
   clearSwitchButton: document.querySelector("#clear-switch-button"),
   todayList: document.querySelector("#today-list"),
+  completeWorkout: document.querySelector("#complete-workout"),
   weekGrid: document.querySelector("#week-grid"),
   runDashboard: document.querySelector("#run-dashboard"),
   runHistory: document.querySelector("#run-history"),
@@ -1207,20 +1208,32 @@ function renderActivity(activity, options = {}) {
   return node;
 }
 
-function renderToday() {
+function todaysList() {
   const key = todayKey();
   const todaysActivities = activities().filter((activity) => activity.date === key);
   const overrideActivity = activities().find((activity) => activity.activity_id === state.todayOverrideActivityId);
   const fallback = activities().find((activity) => !activity.completion?.completed);
-  const list = overrideActivity ? [overrideActivity] : todaysActivities.length ? todaysActivities : fallback ? [fallback] : [];
+  return overrideActivity ? [overrideActivity] : todaysActivities.length ? todaysActivities : fallback ? [fallback] : [];
+}
+
+function renderToday() {
+  const key = todayKey();
+  const list = todaysList();
 
   elements.todayList.innerHTML = "";
   renderTodaySwitcher();
   if (!list.length) {
     elements.todayList.innerHTML = `<div class="empty-state">No activities are scheduled yet. Import a weekly plan to get started.</div>`;
+    elements.completeWorkout.hidden = true;
     return;
   }
   list.forEach((activity) => elements.todayList.append(renderActivity(activity, { loggedDate: key })));
+
+  const allDone = list.every((activity) => activity.completion?.completed);
+  elements.completeWorkout.hidden = false;
+  elements.completeWorkout.disabled = allDone;
+  elements.completeWorkout.classList.toggle("is-complete", allDone);
+  elements.completeWorkout.textContent = allDone ? "Workout complete ✓" : "Complete workout";
 }
 
 function renderTodaySwitcher() {
@@ -2095,6 +2108,18 @@ elements.tabButtons.forEach((button) => {
 });
 
 elements.refreshButton.addEventListener("click", loadState);
+
+elements.completeWorkout.addEventListener("click", async () => {
+  const pending = todaysList().filter((activity) => !activity.completion?.completed);
+  if (!pending.length) return;
+  await flushActiveAutosaves();
+  for (const activity of pending) {
+    await updateActivity(activity.activity_id, {
+      completed: true,
+      logged_date: todayKey()
+    });
+  }
+});
 
 elements.writeAccessButton.addEventListener("click", async () => {
   try {

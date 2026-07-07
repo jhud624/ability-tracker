@@ -1848,3 +1848,29 @@ input, select, textarea { min-width: 0; max-width: 100%; }
 }
 
 .day-column > h3.is-today { color: var(--green); }
+
+/* ---------- Complete workout button ---------- */
+.complete-workout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 56px;
+  margin-top: 14px;
+  padding: 14px 20px;
+  border: 0;
+  background: var(--green);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.complete-workout:hover { background: #c93320; }
+.complete-workout.is-complete {
+  background: var(--ink);
+  color: var(--paper);
+  cursor: default;
+}
