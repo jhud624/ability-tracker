@@ -165,10 +165,24 @@ The adapter accepts Health Auto Export-style `workouts` and `metrics` payloads a
         "intensity": "easy",
         "notes": "Conversational pace."
       },
-      "subtasks": []
+      "subtasks": [
+        "Warm up 5 minutes",
+        { "title": "Bodyweight squat — 3x10", "log_mode": "strength" },
+        { "title": "Couch stretch — 45 sec each side", "log_mode": "timed" },
+        { "title": "Log difficulty and back pain", "log_mode": "check" }
+      ]
     }
   ]
 }
 ```
+
+Subtasks may be plain strings or objects. The optional `log_mode` (also accepted as `tracking`) controls which logging fields the app shows for that exercise and overrides the title-based heuristic:
+
+- `strength` — total lb / sets / reps
+- `timed` — time (min/sec) + rounds
+- `loaded-timed` — time + total lb + rounds
+- `check` — checkbox only, no logging fields
+
+Without `log_mode`, the app infers the mode from the title: an explicit `3x10`-style prescription means strength; stretch/hold/walk/warmup wording means timed; sled/carry wording means loaded-timed.
 
 Exercise tracking is not medical advice. Stop if a movement causes pain and use professional guidance for injuries.
