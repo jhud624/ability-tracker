@@ -58,7 +58,9 @@ const elements = {
 let unlockResolver = null;
 const EXERCISE_DRAFT_PREFIX = "coach_loop_exercise_log_draft:";
 const activeAutosaveFlushers = new Set();
-const weekExpandedActivities = new Set();
+// Per-card expand/collapse override in the Week view. Unset = default
+// (today's workout expanded, everything else collapsed).
+const weekCardExpanded = new Map();
 
 const movementCatalog = [
   {
@@ -1085,7 +1087,8 @@ function renderActivity(activity, options = {}) {
 
   if (options.collapsible) {
     node.classList.add("is-collapsible");
-    const expanded = weekExpandedActivities.has(activity.activity_id);
+    const override = weekCardExpanded.get(activity.activity_id);
+    const expanded = override !== undefined ? override : activity.date === todayKey();
     node.classList.toggle("is-collapsed", !expanded);
     const toggle = document.createElement("button");
     toggle.type = "button";
@@ -1097,8 +1100,7 @@ function renderActivity(activity, options = {}) {
       const nowExpanded = node.classList.contains("is-collapsed");
       node.classList.toggle("is-collapsed", !nowExpanded);
       toggle.setAttribute("aria-expanded", String(nowExpanded));
-      if (nowExpanded) weekExpandedActivities.add(activity.activity_id);
-      else weekExpandedActivities.delete(activity.activity_id);
+      weekCardExpanded.set(activity.activity_id, nowExpanded);
     });
     activityMain.append(toggle);
 
@@ -1197,6 +1199,10 @@ function renderWeek() {
     column.className = "day-column";
     const heading = document.createElement("h3");
     heading.textContent = formatDate(date, { weekday: "long" });
+    if (date === todayKey()) {
+      heading.classList.add("is-today");
+      heading.textContent += " · today";
+    }
     column.append(heading);
     dateActivities.forEach((activity) => column.append(renderActivity(activity, { collapsible: true })));
     elements.weekGrid.append(column);

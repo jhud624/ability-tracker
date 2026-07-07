@@ -1846,3 +1846,5 @@ input, select, textarea { min-width: 0; max-width: 100%; }
   .switcher-panel { padding: 12px; }
   main { padding-bottom: 28px; }
 }
+
+.day-column > h3.is-today { color: var(--green); }
