@@ -704,9 +704,47 @@ function createExerciseLogControls(activity, exercise, log = {}) {
   };
 }
 
+function exerciseLogHasData(payload) {
+  return ["weight_lbs", "sets", "reps", "duration_seconds"].some((field) => Number(payload[field]) > 0);
+}
+
 function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog = {}) {
   let timer = null;
   let lastSaved = exerciseLogSignature(savedLog);
+
+  function completeRowSubtask() {
+    const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');
+    if (!checkbox || checkbox.checked) return;
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  let autoCompletePoll = null;
+
+  function queueAutoComplete() {
+    const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');
+    if (!checkbox || checkbox.checked) return;
+    // Completing triggers a save + re-render; wait until focus leaves the
+    // row so we never pull the keyboard out from under mid-entry typing.
+    if (!row.contains(document.activeElement)) {
+      completeRowSubtask();
+      return;
+    }
+    if (autoCompletePoll) return;
+    autoCompletePoll = window.setInterval(() => {
+      const box = row.querySelector('input[type="checkbox"][data-subtask-id]');
+      if (!row.isConnected || !box || box.checked) {
+        window.clearInterval(autoCompletePoll);
+        autoCompletePoll = null;
+        return;
+      }
+      if (!row.contains(document.activeElement)) {
+        window.clearInterval(autoCompletePoll);
+        autoCompletePoll = null;
+        completeRowSubtask();
+      }
+    }, 700);
+  }
 
   async function flushAutosave() {
     const payload = controls.payload();
@@ -718,6 +756,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       lastSaved = signature;
       clearExerciseDraft(activity.activity_id, payload.exercise_id);
       setAutosaveStatus(controls.status, "Saved", "is-saved");
+      if (exerciseLogHasData(payload)) queueAutoComplete();
     } catch (error) {
       setAutosaveStatus(controls.status, "Not saved", "is-error");
     }
@@ -2200,3 +2239,24 @@ refreshWriteSession()
     updateWriteAccessUi();
   })
   .finally(loadState);
+
+// Keep the screen awake while the app is open (Screen Wake Lock API).
+// Re-request on return to the tab, since the lock releases on hide.
+let screenWakeLock = null;
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    screenWakeLock = await navigator.wakeLock.request("screen");
+  } catch {
+    // Denied (e.g. Low Power Mode) — retried on next visibility/tap.
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") requestWakeLock();
+});
+window.addEventListener("pointerdown", () => {
+  if (!screenWakeLock || screenWakeLock.released) requestWakeLock();
+}, { passive: true });
+requestWakeLock();
