@@ -86,6 +86,13 @@ function arrayOfStrings(value) {
   return value.map((item) => String(item).trim()).filter(Boolean);
 }
 
+const SUBTASK_LOG_MODES = new Set(["strength", "timed", "loaded-timed", "check"]);
+
+function normalizeSubtaskLogMode(value) {
+  const mode = String(value || "").toLowerCase();
+  return SUBTASK_LOG_MODES.has(mode) ? mode : undefined;
+}
+
 function normalizeSubtasks(activityId, subtasks = []) {
   if (!Array.isArray(subtasks)) return [];
   return subtasks.map((subtask, index) => {
@@ -99,7 +106,8 @@ function normalizeSubtasks(activityId, subtasks = []) {
       subtask_id: String(subtask.subtask_id || subtask.id || `${activityId}-task-${index + 1}`),
       title: String(subtask.title || subtask.name || subtask.description || `Task ${index + 1}`),
       kind: subtask.kind || subtask.type ? String(subtask.kind || subtask.type) : undefined,
-      notes: subtask.notes ? String(subtask.notes) : undefined
+      notes: subtask.notes ? String(subtask.notes) : undefined,
+      log_mode: normalizeSubtaskLogMode(subtask.log_mode || subtask.tracking)
     };
   });
 }

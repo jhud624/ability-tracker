@@ -91,6 +91,34 @@ test("validatePlan accepts ChatGPT-style plan JSON and normalizes subtasks", () 
   assert.equal(plan.activities[0].subtasks[0].title, "Warm up");
 });
 
+test("validatePlan preserves valid subtask log_mode values and drops invalid ones", () => {
+  const plan = validatePlan({
+    week_start_date: "2026-06-22",
+    goals: ["Lift twice"],
+    activities: [
+      {
+        date: "2026-06-22",
+        title: "Lift",
+        type: "lift",
+        subtasks: [
+          { title: "Warmup: bodyweight squat — 3x10", log_mode: "strength" },
+          { title: "Plank hold", log_mode: "TIMED" },
+          { title: "Sled push", tracking: "loaded-timed" },
+          { title: "Log difficulty", log_mode: "check" },
+          { title: "Curl", log_mode: "bogus" }
+        ]
+      }
+    ]
+  });
+
+  const subtasks = plan.activities[0].subtasks;
+  assert.equal(subtasks[0].log_mode, "strength");
+  assert.equal(subtasks[1].log_mode, "timed");
+  assert.equal(subtasks[2].log_mode, "loaded-timed");
+  assert.equal(subtasks[3].log_mode, "check");
+  assert.equal(subtasks[4].log_mode, undefined);
+});
+
 test("createDefaultState seeds inferred gear inventory", () => {
   const store = createDefaultState(new Date("2026-06-19T12:00:00"));
   const names = store.gear.map((item) => item.name);

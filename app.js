@@ -366,7 +366,24 @@ function exerciseSupportsDuration(title) {
   return /\b(timer|hold|stretch|plank|walk|warmup|warm-up|cooldown|cool-down|reset|circuit|breathing|mobility|sec|second|seconds|min|minute|minutes)\b/i.test(title);
 }
 
-function exerciseLogMode(title) {
+function parseSetRepPrescription(title) {
+  const match = String(title || "").match(/(\d+)\s*[x×]\s*(\d+(?:\s*[-–]\s*\d+)?)\s*(sec|second|seconds|min|minute|minutes)?/i);
+  if (!match) return null;
+  return {
+    sets: match[1],
+    reps: match[2].replace(/\s+/g, ""),
+    unit: match[3] ? match[3].toLowerCase() : null
+  };
+}
+
+const EXPLICIT_LOG_MODES = new Set(["strength", "timed", "loaded-timed"]);
+
+function exerciseLogMode(title, explicitMode) {
+  if (EXPLICIT_LOG_MODES.has(explicitMode)) return explicitMode;
+  // An explicit sets-x-reps prescription ("3x10") beats duration keywords,
+  // so "Warmup: squat — 3x10" logs as strength, not time.
+  const prescription = parseSetRepPrescription(title);
+  if (prescription && !prescription.unit) return "strength";
   if (!exerciseSupportsDuration(title)) return "strength";
   return /\b(sled|carry|carries|farmer|weighted|vest|drag)\b/i.test(title) ? "loaded-timed" : "timed";
 }
@@ -596,7 +613,8 @@ function createExerciseLogControls(activity, exercise, log = {}) {
   }
   swapLabel.append(swap);
 
-  const mode = exerciseLogMode(selectedTitle);
+  const mode = exerciseLogMode(selectedTitle, exercise.logMode);
+  const prescription = parseSetRepPrescription(selectedTitle);
   const weight = createExerciseNumberField(exercise, "weight_lbs", "total lb", {
     title: "Total weight used per rep, including both sides or both dumbbells.",
     step: "0.5",
@@ -616,6 +634,10 @@ function createExerciseLogControls(activity, exercise, log = {}) {
   weight.label.classList.add("field-weight");
   sets.label.classList.add("field-sets");
   reps.label.classList.add("field-reps");
+  if (prescription) {
+    sets.input.placeholder = prescription.sets;
+    if (!prescription.unit) reps.input.placeholder = prescription.reps;
+  }
 
   const timeLabel = document.createElement("label");
   timeLabel.className = "duration-field";
@@ -902,7 +924,8 @@ function exerciseRows(activity) {
       .filter((subtask) => !subtaskIsNote(subtask))
       .map((subtask) => ({
         exercise_id: subtask.subtask_id,
-        title: subtask.title
+        title: subtask.title,
+        logMode: subtask.log_mode
       }));
   }
   return [{
@@ -1096,7 +1119,9 @@ function renderActivity(activity, options = {}) {
       subtaskList.append(note);
       return;
     }
-    const loggable = usesExerciseVolume && !subtaskIsCheckOnly(subtask.title);
+    const loggable = usesExerciseVolume && (subtask.log_mode
+      ? subtask.log_mode !== "check"
+      : !subtaskIsCheckOnly(subtask.title));
     const row = loggable ? document.createElement("form") : document.createElement("label");
     row.className = loggable ? "subtask-row exercise-entry-row" : "subtask-row";
     const checkbox = document.createElement("input");
@@ -1111,7 +1136,8 @@ function renderActivity(activity, options = {}) {
       row.append(createLibraryJumpButton(subtask.title));
       appendExerciseLogControls(row, activity, {
         exercise_id: subtask.subtask_id,
-        title: subtask.title
+        title: subtask.title,
+        logMode: subtask.log_mode
       });
     }
     subtaskList.append(row);
