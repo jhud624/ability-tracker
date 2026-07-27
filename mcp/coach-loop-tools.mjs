@@ -12,19 +12,24 @@ const weeklySubtaskSchema = z.union([
     log_mode: z.enum(["strength", "timed", "loaded-timed", "check"]).optional()
   }).passthrough()
 ]);
+// Only the fields the server cannot infer are required. activity_id, target,
+// equipment and references are all normalized server-side, and demanding them
+// here just turns valid plans into tool-call failures. activity_id in particular
+// is safer derived than supplied: a reused ID collides with an existing
+// activity's completions and exercise logs.
 const weeklyActivitySchema = z.object({
-  activity_id: z.string().min(1),
+  activity_id: z.string().min(1).optional(),
   date: z.string(),
   title: z.string().min(1),
   type: z.string().min(1),
-  required_or_optional: z.enum(["required", "optional"]),
-  target: looseObject,
-  equipment: z.array(z.string()),
-  references: z.array(z.string()),
+  required_or_optional: z.enum(["required", "optional"]).optional(),
+  target: looseObject.optional(),
+  equipment: z.array(z.string()).optional(),
+  references: z.array(z.string()).optional(),
   subtasks: z.array(weeklySubtaskSchema)
 }).passthrough();
 const weeklyPlanSchema = z.object({
-  plan_id: z.string().min(1),
+  plan_id: z.string().min(1).optional(),
   week_start_date: z.string(),
   goals: z.array(z.string().min(1)).min(1),
   activities: z.array(weeklyActivitySchema).min(1)
@@ -377,9 +382,9 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "import_weekly_plan",
     {
       title: "Import weekly plan",
-      description: "Import and activate a complete ChatGPT-generated weekly plan JSON object. Strength, lift, and mobility activities must contain movement-level subtasks; references are source catalogs and never expand into exercise rows. For an existing week, included dates are merged and untouched dates are preserved.",
+      description: "Import and activate a complete ChatGPT-generated weekly plan JSON object. Every activity needs movement-level subtasks except runs, weighted-vest work, rest, and other general activity, which log at the activity level and take an empty subtasks array. References are source catalogs and never expand into exercise rows. For an existing week, included dates are merged and untouched dates are preserved.",
       inputSchema: {
-        plan: weeklyPlanSchema.describe("Complete weekly plan JSON. Include stable IDs, goals, dates, required/optional status, targets, equipment, references, and movement-level subtasks.")
+        plan: weeklyPlanSchema.describe("Weekly plan JSON with week_start_date, goals, and activities. Each activity needs date, title, type, and subtasks; IDs, targets, equipment, and references are optional and filled in server-side.")
       }
     },
     async ({ plan }) => asText(await request("/api/plans/import", {
@@ -392,12 +397,12 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "update_day_plan",
     {
       title: "Update one day of the current plan",
-      description: "Replace only one date's activities in the active weekly plan without overwriting the rest of the week. Strength, lift, and mobility activities must contain movement-level subtasks; references do not expand into exercise rows. Use this for schedule changes, swaps, or day-specific edits.",
+      description: "Replace only one date's activities in the active weekly plan without overwriting the rest of the week. Every activity needs movement-level subtasks except runs, weighted-vest work, rest, and other general activity, which take an empty subtasks array. References do not expand into exercise rows. The date must fall inside the active plan week. Use this for schedule changes, swaps, or day-specific edits.",
       inputSchema: {
         date: z.string().describe("YYYY-MM-DD date to replace in the current active plan."),
         activities: z.array(weeklyActivitySchema.omit({ date: true }).extend({
           date: z.string().optional()
-        })).describe("Complete activities for this date; date may be omitted because the tool applies the requested date.")
+        })).describe("Complete activities for this date; date may be omitted because the tool applies the requested date. Reuse an activity_id only to keep an existing activity's logs; omit it for new activities.")
       }
     },
     async ({ date, activities }) => asText(await request(`/api/plans/current/days/${encodeURIComponent(date)}`, {

@@ -87,8 +87,19 @@ function arrayOfStrings(value) {
 }
 
 const SUBTASK_LOG_MODES = new Set(["strength", "timed", "loaded-timed", "check"]);
-const DETAILED_PLAN_ACTIVITY_TYPES = new Set(["lift", "strength", "mobility"]);
+// Workout groups whose sessions are logged as a single activity-level entry and
+// therefore legitimately carry no movement subtasks. Everything else must break
+// the session out into loggable exercise rows.
+const NO_SUBTASK_ACTIVITY_GROUPS = new Set(["run", "weighted_vest", "other", "rest"]);
 const ATG_REFERENCE_NOTES = "Use this reference as the canonical ATG/back-health movement catalog. Every movement selected for a workout must still be materialized as its own subtask so it appears as a loggable exercise row; references never expand automatically.";
+
+function normalizeRequiredOrOptional(activity) {
+  // An explicit required_or_optional always wins; target.optional is only the
+  // legacy fallback for plans written before the field existed.
+  const explicit = String(activity.required_or_optional || "").trim().toLowerCase();
+  if (explicit === "optional" || explicit === "required") return explicit;
+  return activity.target?.optional === true ? "optional" : "required";
+}
 
 function normalizeSubtaskLogMode(value) {
   const mode = String(value || "").toLowerCase();
@@ -551,21 +562,83 @@ function normalizeActivityForPlan(activity, index, defaultDate = null) {
     date,
     title,
     type,
-    required_or_optional: activity.required_or_optional === "optional" || activity.target?.optional === true ? "optional" : "required",
+    required_or_optional: normalizeRequiredOrOptional(activity),
     target: activity.target && typeof activity.target === "object" ? activity.target : {},
     equipment: arrayOfStrings(activity.equipment || activity.equipment_required || activity.gear),
     references: arrayOfStrings(activity.references || activity.reference_ids),
     notes: activity.notes ? String(activity.notes) : undefined,
-    subtasks: normalizeSubtasks(activityId, activity.subtasks)
+    subtasks: assertUniqueSubtaskIds(normalizeSubtasks(activityId, activity.subtasks), index)
   };
   return normalized;
 }
 
+function assertUniqueSubtaskIds(subtasks, index) {
+  // Subtask completions live at completions[activity_id].subtasks[subtask_id]
+  // and logs at exercise_logs[activity_id][subtask_id], so two movements sharing
+  // a subtask_id share their checkbox and their logged sets.
+  const subtaskIds = new Set();
+  subtasks.forEach((subtask, subtaskIndex) => {
+    if (subtaskIds.has(subtask.subtask_id)) {
+      throw new Error(`activities[${index}].subtasks[${subtaskIndex}].subtask_id must be unique within the activity`);
+    }
+    subtaskIds.add(subtask.subtask_id);
+  });
+  return subtasks;
+}
+
 function validateDetailedPlanActivity(activity, index) {
-  if (DETAILED_PLAN_ACTIVITY_TYPES.has(activity.type) && activity.subtasks.length === 0) {
+  // Default to requiring movement rows. `type` is free-form, so an allowlist of
+  // detailed types lets any unrecognized noun ("workout", "gym", "circuit")
+  // reintroduce the skeletal-plan bug. Only the groups that genuinely log at the
+  // activity level are exempt.
+  const group = workoutTypeGroup(activity.type);
+  if (!NO_SUBTASK_ACTIVITY_GROUPS.has(group) && activity.subtasks.length === 0) {
     throw new Error(`activities[${index}].subtasks must include movement-level rows for ${activity.type} activities`);
   }
   return activity;
+}
+
+function assertUniqueActivityIds(activities) {
+  const activityIds = new Set();
+  activities.forEach((activity, index) => {
+    if (activityIds.has(activity.activity_id)) {
+      throw new Error(`activities[${index}].activity_id must be unique`);
+    }
+    activityIds.add(activity.activity_id);
+  });
+  return activities;
+}
+
+function assertActivityIdsUnclaimedByOtherPlans(activities, plans, targetPlan) {
+  // Uniqueness within a week is not enough: completions, feedback and
+  // exercise_logs are global maps keyed by activity_id, so an ID borrowed from
+  // another week makes a brand-new workout inherit that week's completion and
+  // logged sets. Must run inside the store lock — `plans` has to be the locked
+  // copy, not a pre-lock read.
+  const claimed = new Map();
+  (plans || []).forEach((plan) => {
+    if (plan === targetPlan) return;
+    (plan.activities || []).forEach((activity) => {
+      if (!claimed.has(activity.activity_id)) claimed.set(activity.activity_id, plan.week_start_date);
+    });
+  });
+  activities.forEach((activity, index) => {
+    const claimedWeek = claimed.get(activity.activity_id);
+    if (claimedWeek) {
+      throw new Error(`activities[${index}].activity_id is already used by the week of ${claimedWeek}`);
+    }
+  });
+  return activities;
+}
+
+function assertActivityDatesWithinWeek(activities, weekStartDate) {
+  const lastDay = weekEndDateFor(weekStartDate);
+  activities.forEach((activity, index) => {
+    if (activity.date < weekStartDate || activity.date > lastDay) {
+      throw new Error(`activities[${index}].date must fall within the plan week`);
+    }
+  });
+  return activities;
 }
 
 function validatePlan(input) {
@@ -582,21 +655,11 @@ function validatePlan(input) {
   validateDateKey(plan.week_start_date, "week_start_date");
 
   const normalizedPlanId = String(plan.plan_id || `plan-${plan.week_start_date}`);
-  const weekEndDate = dateKey(addDays(new Date(`${plan.week_start_date}T12:00:00`), 6));
-  const activities = plan.activities.map((activity, index) => {
-    const normalized = validateDetailedPlanActivity(normalizeActivityForPlan(activity, index), index);
-    if (normalized.date < plan.week_start_date || normalized.date > weekEndDate) {
-      throw new Error(`activities[${index}].date must fall within the plan week`);
-    }
-    return normalized;
-  });
-  const activityIds = new Set();
-  activities.forEach((activity, index) => {
-    if (activityIds.has(activity.activity_id)) {
-      throw new Error(`activities[${index}].activity_id must be unique`);
-    }
-    activityIds.add(activity.activity_id);
-  });
+  const activities = plan.activities.map((activity, index) =>
+    validateDetailedPlanActivity(normalizeActivityForPlan(activity, index), index)
+  );
+  assertActivityDatesWithinWeek(activities, plan.week_start_date);
+  assertUniqueActivityIds(activities);
 
   return {
     plan_id: normalizedPlanId,
@@ -611,14 +674,18 @@ function validatePlan(input) {
 function mergePlanPreservingExisting(existingPlan, incomingPlan) {
   if (!existingPlan || existingPlan.week_start_date !== incomingPlan.week_start_date) return incomingPlan;
   const incomingDates = new Set(incomingPlan.activities.map((activity) => activity.date));
+  // Uniqueness has to be re-checked here, not just on the incoming plan: an
+  // incoming activity can reuse the ID of a preserved activity on an untouched
+  // date, and completions/exercise_logs are keyed by activity_id.
+  const activities = assertUniqueActivityIds([
+    ...(existingPlan.activities || []).filter((activity) => !incomingDates.has(activity.date)),
+    ...incomingPlan.activities
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)));
   return {
     ...existingPlan,
     ...incomingPlan,
     goals: incomingPlan.goals.length ? incomingPlan.goals : existingPlan.goals || [],
-    activities: [
-      ...(existingPlan.activities || []).filter((activity) => !incomingDates.has(activity.date)),
-      ...incomingPlan.activities
-    ].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+    activities,
     created_at: existingPlan.created_at || incomingPlan.created_at,
     updated_at: nowIso()
   };
@@ -666,9 +733,12 @@ function inferEquipmentForActivity(activity) {
   return [];
 }
 
+function weekEndDateFor(weekStartDate) {
+  return dateKey(addDays(new Date(`${weekStartDate}T12:00:00`), 6));
+}
+
 function weekEndDate(plan) {
-  const start = new Date(`${plan.week_start_date}T00:00:00`);
-  return dateKey(addDays(start, 6));
+  return weekEndDateFor(plan.week_start_date);
 }
 
 function activityWithState(activity, store) {
@@ -2262,6 +2332,9 @@ async function handleApi(req, res, pathname) {
     const incomingPlan = validatePlan(body);
     const nextStore = await updateStore((current) => {
       const existingPlan = current.plans.find((item) => item.plan_id === incomingPlan.plan_id || item.week_start_date === incomingPlan.week_start_date);
+      // Only the incoming activities are checked; ones preserved from
+      // existingPlan already belong to the week being written.
+      assertActivityIdsUnclaimedByOtherPlans(incomingPlan.activities, current.plans, existingPlan);
       const plan = mergePlanPreservingExisting(existingPlan, incomingPlan);
       const plans = [
         ...current.plans.filter((item) => item.plan_id !== plan.plan_id && item.week_start_date !== plan.week_start_date),
@@ -2315,12 +2388,17 @@ async function handleApi(req, res, pathname) {
     }
     const body = await readJsonBody(req);
     const incomingActivities = Array.isArray(body.activities) ? body.activities : [];
-    const normalizedActivities = incomingActivities.map((activity, index) =>
+    const normalizedActivities = assertUniqueActivityIds(incomingActivities.map((activity, index) =>
       validateDetailedPlanActivity(normalizeActivityForPlan({ ...activity, date }, index, date), index)
-    );
+    ));
     const nextStore = await updateStore((current) => {
       const currentPlan = activePlan(current);
       if (!currentPlan) throw Object.assign(new Error("No active plan is available"), { statusCode: 404 });
+      // Re-derive the week inside the lock: a concurrent import can activate a
+      // different week between the pre-lock read above and this callback, so
+      // validating against that stale plan would admit out-of-week dates.
+      assertActivityDatesWithinWeek(normalizedActivities, currentPlan.week_start_date);
+      assertActivityIdsUnclaimedByOtherPlans(normalizedActivities, current.plans, currentPlan);
       const previousActivitiesForDate = currentPlan.activities.filter((activity) => activity.date === date);
       const removedActivityIds = previousActivitiesForDate
         .map((activity) => activity.activity_id)
@@ -2328,10 +2406,12 @@ async function handleApi(req, res, pathname) {
       const removed = new Set(removedActivityIds);
       const updatedPlan = {
         ...currentPlan,
-        activities: [
+        // Re-check across the whole week: a replacement day can reuse the ID of
+        // an activity that lives on an untouched date.
+        activities: assertUniqueActivityIds([
           ...currentPlan.activities.filter((activity) => activity.date !== date),
           ...normalizedActivities
-        ].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+        ].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))),
         updated_at: nowIso()
       };
       const plans = current.plans.map((item) => item.plan_id === currentPlan.plan_id ? updatedPlan : item);
@@ -2346,7 +2426,14 @@ async function handleApi(req, res, pathname) {
         delete feedback[activityId];
         delete exercise_logs[activityId];
       });
-      return { ...current, plans, completions, feedback, exercise_logs, actual_links };
+      return {
+        ...current,
+        plans,
+        completions,
+        feedback,
+        exercise_logs: clearBlankFallbackExerciseLogs(exercise_logs, updatedPlan),
+        actual_links
+      };
     }, { action: "plan.day.update", target: date });
     sendJson(res, 200, publicState(nextStore));
     return;

@@ -149,10 +149,11 @@ The adapter accepts Health Auto Export-style `workouts` and `metrics` payloads a
 Weekly plans are treated as complete planning contracts:
 
 - Include at least one weekly goal.
-- Give every activity a stable ID and explicit required/optional status.
-- Keep every strength, lift, and mobility movement in its own subtask.
+- Keep every movement in its own subtask. Runs, weighted-vest work, rest, and other general activity log at the activity level and may carry an empty `subtasks` array; every other activity type must break the session out into movement rows.
 - Use references such as `ref-atg-back-ability` as canonical source catalogs only. References never expand into exercise rows automatically.
 - Keep all activity dates inside the declared Monday-through-Sunday plan week.
+- Activity IDs must be unique across the whole week, including activities preserved from dates a partial import or day update did not touch. Omit `activity_id` to have a stable one derived; supply it only to keep an existing activity's completions and logs.
+- `required_or_optional` is authoritative when present. A legacy `target.optional` flag is only consulted when the field is absent.
 
 ```json
 {
