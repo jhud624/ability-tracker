@@ -224,6 +224,48 @@ test("validatePlan rejects duplicate activity IDs and dates outside the plan wee
   );
 });
 
+test("validatePlan requires movement subtasks for unrecognized workout types", () => {
+  for (const type of ["workout", "gym", "circuit", "resistance"]) {
+    assert.throws(
+      () => validatePlan({
+        week_start_date: "2026-06-22",
+        goals: ["Train"],
+        activities: [{ date: "2026-06-22", title: "Incomplete workout", type, subtasks: [] }]
+      }),
+      /movement-level rows/,
+      `type "${type}" should require movement subtasks`
+    );
+  }
+});
+
+test("validatePlan still allows activity-level logging for runs, vest work, rest, and other", () => {
+  for (const type of ["run", "weighted_vest", "rest", "other"]) {
+    const plan = validatePlan({
+      week_start_date: "2026-06-22",
+      goals: ["Train"],
+      activities: [{ date: "2026-06-22", title: "Session", type, subtasks: [] }]
+    });
+    assert.equal(plan.activities[0].type, type);
+  }
+});
+
+test("an explicit required_or_optional wins over a legacy target.optional flag", () => {
+  const plan = validatePlan({
+    week_start_date: "2026-06-22",
+    goals: ["Run"],
+    activities: [{
+      date: "2026-06-27",
+      title: "Long run",
+      type: "run",
+      required_or_optional: "required",
+      target: { optional: true },
+      subtasks: []
+    }]
+  });
+
+  assert.equal(plan.activities[0].required_or_optional, "required");
+});
+
 test("day plan update replaces only one date in the active week", async () => {
   const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
   const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
@@ -319,6 +361,116 @@ test("weekly plan import preserves untouched existing dates in the same week", a
     assert.deepEqual(updatedActivities.filter((activity) => activity.date === replaceDate).map((activity) => activity.title), ["Merged Replacement"]);
     assert.deepEqual(updatedActivities.filter((activity) => activity.date === untouchedDate).map((activity) => activity.activity_id), untouchedBefore);
     assert.equal(updatedActivities.find((activity) => activity.activity_id === replaceActivity.activity_id).exercise_logs.activity, undefined);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
+test("plan import rejects an activity that reuses a preserved activity's ID on another date", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-merge-id-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  try {
+    const before = await request(handleRequest, { path: "/api/state" });
+    const activities = before.body.active_plan.activities;
+    const importDate = activities[0].date;
+    // An activity on a date the import leaves untouched, so the merge preserves it.
+    const preserved = activities.find((activity) => activity.date !== importDate);
+
+    const response = await request(handleRequest, {
+      method: "POST",
+      path: "/api/plans/import",
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        week_start_date: before.body.active_plan.week_start_date,
+        goals: ["Stay consistent"],
+        activities: [
+          { activity_id: preserved.activity_id, date: importDate, title: "Reused ID", type: "run", subtasks: [] }
+        ]
+      }
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.error, /must be unique/);
+
+    const after = await request(handleRequest, { path: "/api/state" });
+    assert.deepEqual(
+      after.body.active_plan.activities.map((activity) => activity.activity_id),
+      activities.map((activity) => activity.activity_id)
+    );
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
+test("day plan update rejects duplicate activity IDs and dates outside the plan week", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-day-id-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  try {
+    const before = await request(handleRequest, { path: "/api/state" });
+    const plan = before.body.active_plan;
+    const date = plan.activities[0].date;
+    const preserved = plan.activities.find((activity) => activity.date !== date);
+
+    const duplicateWithinDay = await request(handleRequest, {
+      method: "PUT",
+      path: `/api/plans/current/days/${date}`,
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        activities: [
+          { activity_id: "collide-1", title: "Session A", type: "run", subtasks: [] },
+          { activity_id: "collide-1", title: "Session B", type: "run", subtasks: [] }
+        ]
+      }
+    });
+    assert.equal(duplicateWithinDay.statusCode, 400);
+    assert.match(duplicateWithinDay.body.error, /must be unique/);
+
+    const duplicateAcrossWeek = await request(handleRequest, {
+      method: "PUT",
+      path: `/api/plans/current/days/${date}`,
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        activities: [{ activity_id: preserved.activity_id, title: "Reused ID", type: "run", subtasks: [] }]
+      }
+    });
+    assert.equal(duplicateAcrossWeek.statusCode, 400);
+    assert.match(duplicateAcrossWeek.body.error, /must be unique/);
+
+    const outsideWeek = await request(handleRequest, {
+      method: "PUT",
+      path: "/api/plans/current/days/2030-01-01",
+      headers: { authorization: "Bearer test-token" },
+      body: { activities: [{ title: "Far future run", type: "run", subtasks: [] }] }
+    });
+    assert.equal(outsideWeek.statusCode, 400);
+    assert.match(outsideWeek.body.error, /within the plan week/);
+
+    const untypedWorkout = await request(handleRequest, {
+      method: "PUT",
+      path: `/api/plans/current/days/${date}`,
+      headers: { authorization: "Bearer test-token" },
+      body: { activities: [{ title: "Full Gym Session", type: "workout", subtasks: [] }] }
+    });
+    assert.equal(untypedWorkout.statusCode, 400);
+    assert.match(untypedWorkout.body.error, /movement-level rows/);
+
+    const after = await request(handleRequest, { path: "/api/state" });
+    assert.deepEqual(
+      after.body.active_plan.activities.map((activity) => activity.activity_id),
+      plan.activities.map((activity) => activity.activity_id)
+    );
   } finally {
     if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
     else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
