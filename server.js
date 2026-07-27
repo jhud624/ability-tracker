@@ -87,6 +87,8 @@ function arrayOfStrings(value) {
 }
 
 const SUBTASK_LOG_MODES = new Set(["strength", "timed", "loaded-timed", "check"]);
+const DETAILED_PLAN_ACTIVITY_TYPES = new Set(["lift", "strength", "mobility"]);
+const ATG_REFERENCE_NOTES = "Use this reference as the canonical ATG/back-health movement catalog. Every movement selected for a workout must still be materialized as its own subtask so it appears as a loggable exercise row; references never expand automatically.";
 
 function normalizeSubtaskLogMode(value) {
   const mode = String(value || "").toLowerCase();
@@ -118,7 +120,7 @@ function buildDefaultReferences() {
       reference_id: "ref-atg-back-ability",
       title: "ATG Back Ability reference set",
       category: "back_health",
-      notes: "Reference the ATG/back-health routine set previously shared in this project instead of repeating every movement in each weekly plan.",
+      notes: ATG_REFERENCE_NOTES,
       movements: [
         "Backward walking",
         "Tibialis raise",
@@ -461,11 +463,14 @@ async function updateStore(mutator, audit = {}) {
 
 function migrateStore(store) {
   const health = store.health || { actual_workouts: [], daily_metrics: [] };
+  const references = Array.isArray(store.references) && store.references.length ? store.references : buildDefaultReferences();
   const nextStore = {
     ...store,
     plans: Array.isArray(store.plans) ? store.plans.map(normalizePlanForCurrentSchema) : [],
     gear: Array.isArray(store.gear) && store.gear.length ? store.gear.map((item) => normalizeGearItem(item)) : buildDefaultGearInventory(),
-    references: Array.isArray(store.references) && store.references.length ? store.references : buildDefaultReferences(),
+    references: references.map((reference) => reference.reference_id === "ref-atg-back-ability"
+      ? { ...reference, notes: ATG_REFERENCE_NOTES }
+      : reference),
     coach_notes: typeof store.coach_notes === "string" ? store.coach_notes : "",
     health: {
       actual_workouts: Array.isArray(health.actual_workouts) ? health.actual_workouts.map(normalizeActualWorkout) : [],
@@ -541,18 +546,26 @@ function normalizeActivityForPlan(activity, index, defaultDate = null) {
   if (!title) throw new Error(`activities[${index}].title is required`);
   if (!type) throw new Error(`activities[${index}].type is required`);
   const activityId = String(activity.activity_id || activity.id || stableId("act", [date, type, title]));
-  return {
+  const normalized = {
     activity_id: activityId,
     date,
     title,
     type,
-    required_or_optional: activity.required_or_optional === "optional" ? "optional" : "required",
+    required_or_optional: activity.required_or_optional === "optional" || activity.target?.optional === true ? "optional" : "required",
     target: activity.target && typeof activity.target === "object" ? activity.target : {},
     equipment: arrayOfStrings(activity.equipment || activity.equipment_required || activity.gear),
     references: arrayOfStrings(activity.references || activity.reference_ids),
     notes: activity.notes ? String(activity.notes) : undefined,
     subtasks: normalizeSubtasks(activityId, activity.subtasks)
   };
+  return normalized;
+}
+
+function validateDetailedPlanActivity(activity, index) {
+  if (DETAILED_PLAN_ACTIVITY_TYPES.has(activity.type) && activity.subtasks.length === 0) {
+    throw new Error(`activities[${index}].subtasks must include movement-level rows for ${activity.type} activities`);
+  }
+  return activity;
 }
 
 function validatePlan(input) {
@@ -563,15 +576,32 @@ function validatePlan(input) {
   if (!Array.isArray(plan.activities) || plan.activities.length === 0) {
     throw new Error("Plan must include at least one activity");
   }
+  if (!Array.isArray(plan.goals) || plan.goals.map((goal) => String(goal).trim()).filter(Boolean).length === 0) {
+    throw new Error("Plan must include at least one weekly goal");
+  }
   validateDateKey(plan.week_start_date, "week_start_date");
 
   const normalizedPlanId = String(plan.plan_id || `plan-${plan.week_start_date}`);
-  const activities = plan.activities.map((activity, index) => normalizeActivityForPlan(activity, index));
+  const weekEndDate = dateKey(addDays(new Date(`${plan.week_start_date}T12:00:00`), 6));
+  const activities = plan.activities.map((activity, index) => {
+    const normalized = validateDetailedPlanActivity(normalizeActivityForPlan(activity, index), index);
+    if (normalized.date < plan.week_start_date || normalized.date > weekEndDate) {
+      throw new Error(`activities[${index}].date must fall within the plan week`);
+    }
+    return normalized;
+  });
+  const activityIds = new Set();
+  activities.forEach((activity, index) => {
+    if (activityIds.has(activity.activity_id)) {
+      throw new Error(`activities[${index}].activity_id must be unique`);
+    }
+    activityIds.add(activity.activity_id);
+  });
 
   return {
     plan_id: normalizedPlanId,
     week_start_date: plan.week_start_date,
-    goals: Array.isArray(plan.goals) ? plan.goals.map(String) : [],
+    goals: plan.goals.map(String).map((goal) => goal.trim()).filter(Boolean),
     activities,
     created_at: plan.created_at || nowIso(),
     updated_at: nowIso()
@@ -592,6 +622,24 @@ function mergePlanPreservingExisting(existingPlan, incomingPlan) {
     created_at: existingPlan.created_at || incomingPlan.created_at,
     updated_at: nowIso()
   };
+}
+
+function exerciseLogHasStoredData(log = {}) {
+  return ["weight_lbs", "sets", "reps", "duration_seconds"].some((field) => Number(log[field]) > 0);
+}
+
+function clearBlankFallbackExerciseLogs(exerciseLogs = {}, plan) {
+  const nextLogs = { ...exerciseLogs };
+  (plan.activities || []).forEach((activity) => {
+    if (!activity.subtasks?.length || !nextLogs[activity.activity_id]?.activity) return;
+    const activityLogs = { ...nextLogs[activity.activity_id] };
+    if (!exerciseLogHasStoredData(activityLogs.activity)) {
+      delete activityLogs.activity;
+      if (Object.keys(activityLogs).length) nextLogs[activity.activity_id] = activityLogs;
+      else delete nextLogs[activity.activity_id];
+    }
+  });
+  return nextLogs;
 }
 
 function activePlan(store) {
@@ -2219,7 +2267,8 @@ async function handleApi(req, res, pathname) {
         ...current.plans.filter((item) => item.plan_id !== plan.plan_id && item.week_start_date !== plan.week_start_date),
         plan
       ];
-      return { ...current, plans, active_plan_id: plan.plan_id };
+      const exercise_logs = clearBlankFallbackExerciseLogs(current.exercise_logs, plan);
+      return { ...current, plans, exercise_logs, active_plan_id: plan.plan_id };
     }, { action: "plan.import", target: incomingPlan.week_start_date });
     sendJson(res, 201, publicState(nextStore));
     return;
@@ -2266,7 +2315,9 @@ async function handleApi(req, res, pathname) {
     }
     const body = await readJsonBody(req);
     const incomingActivities = Array.isArray(body.activities) ? body.activities : [];
-    const normalizedActivities = incomingActivities.map((activity, index) => normalizeActivityForPlan({ ...activity, date }, index, date));
+    const normalizedActivities = incomingActivities.map((activity, index) =>
+      validateDetailedPlanActivity(normalizeActivityForPlan({ ...activity, date }, index, date), index)
+    );
     const nextStore = await updateStore((current) => {
       const currentPlan = activePlan(current);
       if (!currentPlan) throw Object.assign(new Error("No active plan is available"), { statusCode: 404 });

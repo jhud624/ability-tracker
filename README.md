@@ -146,6 +146,14 @@ The adapter accepts Health Auto Export-style `workouts` and `metrics` payloads a
 
 ## Plan JSON shape
 
+Weekly plans are treated as complete planning contracts:
+
+- Include at least one weekly goal.
+- Give every activity a stable ID and explicit required/optional status.
+- Keep every strength, lift, and mobility movement in its own subtask.
+- Use references such as `ref-atg-back-ability` as canonical source catalogs only. References never expand into exercise rows automatically.
+- Keep all activity dates inside the declared Monday-through-Sunday plan week.
+
 ```json
 {
   "plan_id": "plan-2026-06-22",

@@ -157,8 +157,70 @@ test("private read endpoints require owner auth when an API token is configured"
 
 test("validatePlan rejects plans without activities", () => {
   assert.throws(
-    () => validatePlan({ week_start_date: "2026-06-22", activities: [] }),
+    () => validatePlan({ week_start_date: "2026-06-22", goals: ["Train"], activities: [] }),
     /at least one activity/
+  );
+});
+
+test("validatePlan rejects plans without weekly goals", () => {
+  assert.throws(
+    () => validatePlan({
+      week_start_date: "2026-06-22",
+      activities: [{ date: "2026-06-22", title: "Easy Run", type: "run", subtasks: [] }]
+    }),
+    /at least one weekly goal/
+  );
+});
+
+test("validatePlan rejects strength, lift, and mobility activities without movement subtasks", () => {
+  for (const type of ["strength", "lift", "mobility"]) {
+    assert.throws(
+      () => validatePlan({
+        week_start_date: "2026-06-22",
+        goals: ["Train"],
+        activities: [{ date: "2026-06-22", title: "Incomplete workout", type, subtasks: [] }]
+      }),
+      /movement-level rows/
+    );
+  }
+});
+
+test("validatePlan keeps runs optional when target.optional is the legacy source", () => {
+  const plan = validatePlan({
+    week_start_date: "2026-06-22",
+    goals: ["Run"],
+    activities: [{
+      date: "2026-06-27",
+      title: "Optional shakeout",
+      type: "run",
+      target: { optional: true },
+      subtasks: []
+    }]
+  });
+
+  assert.equal(plan.activities[0].required_or_optional, "optional");
+});
+
+test("validatePlan rejects duplicate activity IDs and dates outside the plan week", () => {
+  assert.throws(
+    () => validatePlan({
+      week_start_date: "2026-06-22",
+      goals: ["Run"],
+      activities: [{ activity_id: "run-1", date: "2026-06-29", title: "Late run", type: "run", subtasks: [] }]
+    }),
+    /within the plan week/
+  );
+
+  assert.throws(
+    () => validatePlan({
+      week_start_date: "2026-06-22",
+      goals: ["Run"],
+      activities: [
+        { activity_id: "run-1", date: "2026-06-22", title: "Run one", type: "run", subtasks: [] },
+        { activity_id: "run-1", date: "2026-06-23", title: "Run two", type: "run", subtasks: [] }
+      ]
+    }),
+    /must be unique/
   );
 });
 
@@ -214,8 +276,24 @@ test("weekly plan import preserves untouched existing dates in the same week", a
     const before = await request(handleRequest, { path: "/api/state" });
     const originalActivities = before.body.active_plan.activities;
     const replaceDate = originalActivities[0].date;
+    const replaceActivity = originalActivities.find((activity) => activity.date === replaceDate);
     const untouchedDate = originalActivities.find((activity) => activity.date !== replaceDate).date;
     const untouchedBefore = originalActivities.filter((activity) => activity.date === untouchedDate).map((activity) => activity.activity_id);
+
+    const blankLog = await request(handleRequest, {
+      method: "POST",
+      path: `/api/activities/${encodeURIComponent(replaceActivity.activity_id)}/exercise-log`,
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        exercise_id: "activity",
+        title: replaceActivity.title,
+        weight_lbs: null,
+        sets: null,
+        reps: null,
+        duration_seconds: null
+      }
+    });
+    assert.equal(blankLog.statusCode, 200);
 
     const response = await request(handleRequest, {
       method: "POST",
@@ -223,11 +301,14 @@ test("weekly plan import preserves untouched existing dates in the same week", a
       headers: { authorization: "Bearer test-token" },
       body: {
         week_start_date: before.body.active_plan.week_start_date,
+        goals: ["Preserve training consistency"],
         activities: [
           {
+            activity_id: replaceActivity.activity_id,
             date: replaceDate,
             title: "Merged Replacement",
-            type: "lift"
+            type: "lift",
+            subtasks: ["Incline curl 3x10"]
           }
         ]
       }
@@ -237,6 +318,7 @@ test("weekly plan import preserves untouched existing dates in the same week", a
     const updatedActivities = response.body.active_plan.activities;
     assert.deepEqual(updatedActivities.filter((activity) => activity.date === replaceDate).map((activity) => activity.title), ["Merged Replacement"]);
     assert.deepEqual(updatedActivities.filter((activity) => activity.date === untouchedDate).map((activity) => activity.activity_id), untouchedBefore);
+    assert.equal(updatedActivities.find((activity) => activity.activity_id === replaceActivity.activity_id).exercise_logs.activity, undefined);
   } finally {
     if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
     else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
@@ -601,13 +683,15 @@ test("ambiguous same-day actual defaults to the first compatible workout and fla
             title: "Lower Body Maintenance",
             type: "lift",
             required_or_optional: "required",
-            target: { duration_minutes: 30 }
+            target: { duration_minutes: 30 },
+            subtasks: ["Squat 3x8"]
           },
           {
             title: "Upper Body Strength",
             type: "lift",
             required_or_optional: "optional",
-            target: { duration_minutes: 25 }
+            target: { duration_minutes: 25 },
+            subtasks: ["Incline press 3x8"]
           }
         ]
       }
@@ -779,7 +863,8 @@ test("applying an incompatible Hiking actual creates a weighted vest activity an
             title: "Upper Body + Arms",
             type: "lift",
             required_or_optional: "required",
-            target: { duration_minutes: 50 }
+            target: { duration_minutes: 50 },
+            subtasks: ["Dumbbell curl 3x10"]
           }
         ]
       }
@@ -1002,7 +1087,8 @@ test("day plan replacement clears stale actual links for removed activities", as
           {
             title: "Replacement Session",
             type: "strength",
-            required_or_optional: "required"
+            required_or_optional: "required",
+            subtasks: ["Goblet squat 3x10"]
           }
         ]
       }
