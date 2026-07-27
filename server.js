@@ -567,9 +567,23 @@ function normalizeActivityForPlan(activity, index, defaultDate = null) {
     equipment: arrayOfStrings(activity.equipment || activity.equipment_required || activity.gear),
     references: arrayOfStrings(activity.references || activity.reference_ids),
     notes: activity.notes ? String(activity.notes) : undefined,
-    subtasks: normalizeSubtasks(activityId, activity.subtasks)
+    subtasks: assertUniqueSubtaskIds(normalizeSubtasks(activityId, activity.subtasks), index)
   };
   return normalized;
+}
+
+function assertUniqueSubtaskIds(subtasks, index) {
+  // Subtask completions live at completions[activity_id].subtasks[subtask_id]
+  // and logs at exercise_logs[activity_id][subtask_id], so two movements sharing
+  // a subtask_id share their checkbox and their logged sets.
+  const subtaskIds = new Set();
+  subtasks.forEach((subtask, subtaskIndex) => {
+    if (subtaskIds.has(subtask.subtask_id)) {
+      throw new Error(`activities[${index}].subtasks[${subtaskIndex}].subtask_id must be unique within the activity`);
+    }
+    subtaskIds.add(subtask.subtask_id);
+  });
+  return subtasks;
 }
 
 function validateDetailedPlanActivity(activity, index) {
@@ -591,6 +605,28 @@ function assertUniqueActivityIds(activities) {
       throw new Error(`activities[${index}].activity_id must be unique`);
     }
     activityIds.add(activity.activity_id);
+  });
+  return activities;
+}
+
+function assertActivityIdsUnclaimedByOtherPlans(activities, plans, targetPlan) {
+  // Uniqueness within a week is not enough: completions, feedback and
+  // exercise_logs are global maps keyed by activity_id, so an ID borrowed from
+  // another week makes a brand-new workout inherit that week's completion and
+  // logged sets. Must run inside the store lock — `plans` has to be the locked
+  // copy, not a pre-lock read.
+  const claimed = new Map();
+  (plans || []).forEach((plan) => {
+    if (plan === targetPlan) return;
+    (plan.activities || []).forEach((activity) => {
+      if (!claimed.has(activity.activity_id)) claimed.set(activity.activity_id, plan.week_start_date);
+    });
+  });
+  activities.forEach((activity, index) => {
+    const claimedWeek = claimed.get(activity.activity_id);
+    if (claimedWeek) {
+      throw new Error(`activities[${index}].activity_id is already used by the week of ${claimedWeek}`);
+    }
   });
   return activities;
 }
@@ -2296,6 +2332,9 @@ async function handleApi(req, res, pathname) {
     const incomingPlan = validatePlan(body);
     const nextStore = await updateStore((current) => {
       const existingPlan = current.plans.find((item) => item.plan_id === incomingPlan.plan_id || item.week_start_date === incomingPlan.week_start_date);
+      // Only the incoming activities are checked; ones preserved from
+      // existingPlan already belong to the week being written.
+      assertActivityIdsUnclaimedByOtherPlans(incomingPlan.activities, current.plans, existingPlan);
       const plan = mergePlanPreservingExisting(existingPlan, incomingPlan);
       const plans = [
         ...current.plans.filter((item) => item.plan_id !== plan.plan_id && item.week_start_date !== plan.week_start_date),
@@ -2352,10 +2391,14 @@ async function handleApi(req, res, pathname) {
     const normalizedActivities = assertUniqueActivityIds(incomingActivities.map((activity, index) =>
       validateDetailedPlanActivity(normalizeActivityForPlan({ ...activity, date }, index, date), index)
     ));
-    assertActivityDatesWithinWeek(normalizedActivities, plan.week_start_date);
     const nextStore = await updateStore((current) => {
       const currentPlan = activePlan(current);
       if (!currentPlan) throw Object.assign(new Error("No active plan is available"), { statusCode: 404 });
+      // Re-derive the week inside the lock: a concurrent import can activate a
+      // different week between the pre-lock read above and this callback, so
+      // validating against that stale plan would admit out-of-week dates.
+      assertActivityDatesWithinWeek(normalizedActivities, currentPlan.week_start_date);
+      assertActivityIdsUnclaimedByOtherPlans(normalizedActivities, current.plans, currentPlan);
       const previousActivitiesForDate = currentPlan.activities.filter((activity) => activity.date === date);
       const removedActivityIds = previousActivitiesForDate
         .map((activity) => activity.activity_id)

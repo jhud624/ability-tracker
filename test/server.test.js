@@ -55,6 +55,43 @@ function request(handler, { method = "GET", path = "/", body = null, headers = {
   });
 }
 
+// Issues a request whose body is withheld until `release` has run to
+// completion, so another request can be interleaved at a known point: after the
+// handler's pre-lock store read, before it reaches updateStore.
+function requestWithDeferredBody({ method, path, body, headers = {}, release }) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let released = false;
+    const req = new (require("node:stream").Readable)({
+      read() {
+        if (released) return;
+        released = true;
+        release().then(() => {
+          this.push(JSON.stringify(body));
+          this.push(null);
+        }, reject);
+      }
+    });
+    req.method = method;
+    req.url = path;
+    req.headers = { host: "127.0.0.1", "content-type": "application/json", ...headers };
+    const res = {
+      statusCode: 200,
+      headers: {},
+      writeHead(statusCode, responseHeaders) {
+        this.statusCode = statusCode;
+        this.headers = responseHeaders || {};
+      },
+      end(chunk) {
+        if (chunk) chunks.push(Buffer.from(chunk));
+        const text = Buffer.concat(chunks).toString("utf8");
+        resolve({ statusCode: this.statusCode, headers: this.headers, body: text ? JSON.parse(text) : null });
+      }
+    };
+    handleRequest(req, res);
+  });
+}
+
 test("buildDefaultPlan creates a weekly coach plan with stable activity shape", () => {
   const plan = buildDefaultPlan(new Date("2026-06-19T12:00:00"));
   const easyRun = plan.activities.find((activity) => activity.title === "Easy Run");
@@ -403,6 +440,172 @@ test("plan import rejects an activity that reuses a preserved activity's ID on a
       after.body.active_plan.activities.map((activity) => activity.activity_id),
       activities.map((activity) => activity.activity_id)
     );
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
+test("plan import rejects an activity ID already claimed by another week", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-cross-week-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  try {
+    const before = await request(handleRequest, { path: "/api/state" });
+    const weekStart = before.body.active_plan.week_start_date;
+    const existing = before.body.active_plan.activities[0];
+
+    const completed = await request(handleRequest, {
+      method: "PATCH",
+      path: `/api/activities/${encodeURIComponent(existing.activity_id)}`,
+      headers: { authorization: "Bearer test-token" },
+      body: { completed: true }
+    });
+    assert.equal(completed.statusCode, 200);
+
+    const nextWeekStart = (() => {
+      const next = new Date(`${weekStart}T12:00:00`);
+      next.setDate(next.getDate() + 7);
+      return next.toISOString().slice(0, 10);
+    })();
+
+    // completions/feedback/exercise_logs are global maps keyed by activity_id,
+    // so reusing an ID across weeks makes a new workout inherit old state.
+    const response = await request(handleRequest, {
+      method: "POST",
+      path: "/api/plans/import",
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        week_start_date: nextWeekStart,
+        goals: ["Next week"],
+        activities: [
+          { activity_id: existing.activity_id, date: nextWeekStart, title: "Brand new session", type: "run", subtasks: [] }
+        ]
+      }
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.error, /already used by the week of/);
+
+    // Re-importing the same week may still reuse its own IDs.
+    const sameWeek = await request(handleRequest, {
+      method: "POST",
+      path: "/api/plans/import",
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        week_start_date: weekStart,
+        goals: ["This week"],
+        activities: [
+          { activity_id: existing.activity_id, date: existing.date, title: "Reworked session", type: "run", subtasks: [] }
+        ]
+      }
+    });
+    assert.equal(sameWeek.statusCode, 201);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
+test("plan import rejects duplicate subtask IDs within an activity", () => {
+  assert.throws(
+    () => validatePlan({
+      week_start_date: "2026-06-22",
+      goals: ["Train"],
+      activities: [{
+        date: "2026-06-22",
+        title: "Push Day",
+        type: "lift",
+        subtasks: [
+          { subtask_id: "dup", title: "Bench 3x5" },
+          { subtask_id: "dup", title: "Overhead press 3x5" }
+        ]
+      }]
+    }),
+    /subtask_id must be unique within the activity/
+  );
+
+  // A supplied ID must not collide with a generated one either.
+  assert.throws(
+    () => validatePlan({
+      week_start_date: "2026-06-22",
+      goals: ["Train"],
+      activities: [{
+        activity_id: "push-day",
+        date: "2026-06-22",
+        title: "Push Day",
+        type: "lift",
+        subtasks: ["Bench 3x5", { subtask_id: "push-day-task-1", title: "Overhead press 3x5" }]
+      }]
+    }),
+    /subtask_id must be unique within the activity/
+  );
+});
+
+test("a day update racing a weekly import never lands activities outside the active week", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-race-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  try {
+    const before = await request(handleRequest, { path: "/api/state" });
+    const weekStart = before.body.active_plan.week_start_date;
+    const nextWeekStart = (() => {
+      const next = new Date(`${weekStart}T12:00:00`);
+      next.setDate(next.getDate() + 7);
+      return next.toISOString().slice(0, 10);
+    })();
+
+    // Park the day update inside readJsonBody, after it has taken its pre-lock
+    // read of the active plan but before it reaches updateStore. The import then
+    // activates a different week underneath it, so a check against that pre-lock
+    // plan would admit a week-N date into the week-N+1 plan.
+    const dayUpdate = requestWithDeferredBody({
+      method: "PUT",
+      path: `/api/plans/current/days/${weekStart}`,
+      headers: { authorization: "Bearer test-token" },
+      body: { activities: [{ title: "Raced Session", type: "run", subtasks: [] }] },
+      release: async () => {
+        const imported = await request(handleRequest, {
+          method: "POST",
+          path: "/api/plans/import",
+          headers: { authorization: "Bearer test-token" },
+          body: {
+            week_start_date: nextWeekStart,
+            goals: ["Next week"],
+            activities: [{ date: nextWeekStart, title: "Next Week Run", type: "run", subtasks: [] }]
+          }
+        });
+        assert.equal(imported.statusCode, 201);
+        assert.equal(imported.body.active_plan.week_start_date, nextWeekStart);
+      }
+    });
+
+    const raced = await dayUpdate;
+    assert.equal(raced.statusCode, 400);
+    assert.match(raced.body.error, /within the plan week/);
+
+    const after = await request(handleRequest, { path: "/api/state" });
+    for (const plan of after.body.plans) {
+      const lastDay = (() => {
+        const end = new Date(`${plan.week_start_date}T12:00:00`);
+        end.setDate(end.getDate() + 6);
+        return end.toISOString().slice(0, 10);
+      })();
+      for (const activity of plan.activities) {
+        assert.ok(
+          activity.date >= plan.week_start_date && activity.date <= lastDay,
+          `${activity.title} (${activity.date}) escaped the week of ${plan.week_start_date}`
+        );
+      }
+    }
   } finally {
     if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
     else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
