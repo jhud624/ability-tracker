@@ -733,7 +733,13 @@ function exerciseLogHasData(payload) {
 
 function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog = {}) {
   let timer = null;
-  let lastSaved = exerciseLogSignature(savedLog);
+  const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
+  const hasSavedLog = Object.keys(savedLog || {}).length > 0;
+  // A newly rendered empty row has a title even when the user has not entered
+  // anything. Use that pristine payload as the baseline so visibility/pagehide
+  // flushing does not manufacture a blank exercise log. Preserve draft recovery
+  // and real saved-log comparisons.
+  let lastSaved = exerciseLogSignature(!hasSavedLog && !draft ? controls.payload() : savedLog);
 
   function completeRowSubtask() {
     const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');

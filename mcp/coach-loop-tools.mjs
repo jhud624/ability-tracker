@@ -2,9 +2,32 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 const looseObject = z.object({}).passthrough();
+const weeklySubtaskSchema = z.union([
+  z.string().min(1),
+  z.object({
+    subtask_id: z.string().optional(),
+    title: z.string().min(1),
+    kind: z.string().optional(),
+    notes: z.string().optional(),
+    log_mode: z.enum(["strength", "timed", "loaded-timed", "check"]).optional()
+  }).passthrough()
+]);
+const weeklyActivitySchema = z.object({
+  activity_id: z.string().min(1),
+  date: z.string(),
+  title: z.string().min(1),
+  type: z.string().min(1),
+  required_or_optional: z.enum(["required", "optional"]),
+  target: looseObject,
+  equipment: z.array(z.string()),
+  references: z.array(z.string()),
+  subtasks: z.array(weeklySubtaskSchema)
+}).passthrough();
 const weeklyPlanSchema = z.object({
+  plan_id: z.string().min(1),
   week_start_date: z.string(),
-  activities: z.array(looseObject)
+  goals: z.array(z.string().min(1)).min(1),
+  activities: z.array(weeklyActivitySchema).min(1)
 }).passthrough();
 
 function dateKeyFromDate(date) {
@@ -354,9 +377,9 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "import_weekly_plan",
     {
       title: "Import weekly plan",
-      description: "Import and activate a ChatGPT-generated weekly plan JSON object. For an existing week, included dates are merged and untouched dates are preserved.",
+      description: "Import and activate a complete ChatGPT-generated weekly plan JSON object. Strength, lift, and mobility activities must contain movement-level subtasks; references are source catalogs and never expand into exercise rows. For an existing week, included dates are merged and untouched dates are preserved.",
       inputSchema: {
-        plan: weeklyPlanSchema.describe("Weekly plan JSON with week_start_date and activities.")
+        plan: weeklyPlanSchema.describe("Complete weekly plan JSON. Include stable IDs, goals, dates, required/optional status, targets, equipment, references, and movement-level subtasks.")
       }
     },
     async ({ plan }) => asText(await request("/api/plans/import", {
@@ -369,10 +392,12 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "update_day_plan",
     {
       title: "Update one day of the current plan",
-      description: "Replace only one date's activities in the active weekly plan without overwriting the rest of the week. Use this for schedule changes, swaps, or day-specific edits.",
+      description: "Replace only one date's activities in the active weekly plan without overwriting the rest of the week. Strength, lift, and mobility activities must contain movement-level subtasks; references do not expand into exercise rows. Use this for schedule changes, swaps, or day-specific edits.",
       inputSchema: {
         date: z.string().describe("YYYY-MM-DD date to replace in the current active plan."),
-        activities: z.array(looseObject).describe("Activities for this date. Each activity needs title and type; date may be omitted because the tool applies the requested date.")
+        activities: z.array(weeklyActivitySchema.omit({ date: true }).extend({
+          date: z.string().optional()
+        })).describe("Complete activities for this date; date may be omitted because the tool applies the requested date.")
       }
     },
     async ({ date, activities }) => asText(await request(`/api/plans/current/days/${encodeURIComponent(date)}`, {

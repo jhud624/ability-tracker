@@ -43,12 +43,14 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
     assert.ok(names.includes("get_gear"));
     assert.ok(names.includes("upsert_gear"));
     assert.ok(names.includes("import_weekly_plan"));
+    assert.ok(names.includes("update_day_plan"));
     assert.ok(names.includes("update_goals"));
     assert.ok(names.includes("patch_goals"));
     assert.ok(names.includes("apply_actual_workout"));
     assert.ok(names.includes("update_run_plan"));
     assert.ok(names.includes("get_run_plan"));
     assert.ok(names.includes("update_coach_notes"));
+    assert.ok(names.includes("save_exercise_log"));
 
     const result = await client.callTool({ name: "get_coach_summary", arguments: {} });
     assert.equal(result.content[0].type, "text");
