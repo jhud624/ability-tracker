@@ -34,6 +34,20 @@ const weeklyPlanSchema = z.object({
   goals: z.array(z.string().min(1)).min(1),
   activities: z.array(weeklyActivitySchema).min(1)
 }).passthrough();
+const exerciseGlossaryEntrySchema = z.object({
+  glossary_id: z.string().min(1).optional(),
+  canonical_name: z.string().min(1),
+  aliases: z.array(z.string().min(1)).optional(),
+  description: z.string().min(1),
+  instructions: z.array(z.string().min(1)).min(1),
+  cues: z.array(z.string().min(1)).optional(),
+  cautions: z.array(z.string().min(1)).optional(),
+  equipment: z.array(z.string().min(1)).optional(),
+  source_title: z.string().min(1),
+  source_publisher: z.string().optional(),
+  source_url: z.string().url(),
+  video_url: z.string().url().optional()
+}).passthrough();
 
 function dateKeyFromDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -198,6 +212,7 @@ function compactPlan(plan) {
 
 function compactCoachPayload(payload) {
   if (!payload || typeof payload !== "object") return payload;
+  if (Array.isArray(payload)) return payload;
   const next = { ...payload };
 
   if (next.active_plan) next.active_plan = compactPlan(next.active_plan);
@@ -338,6 +353,15 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
   );
 
   registerTool(
+    "get_exercise_glossary",
+    {
+      title: "Get exercise glossary",
+      description: "Read the durable, sourced movement glossary used by the Workout Library. Match planned movement names against canonical_name and aliases before adding entries."
+    },
+    async () => asText(await request("/api/exercise-glossary"))
+  );
+
+  registerTool(
     "get_audit_log",
     {
       title: "Get audit log",
@@ -375,6 +399,24 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     },
     async ({ gear_id }) => asText(await request(`/api/gear/${encodeURIComponent(gear_id)}`, {
       method: "DELETE"
+    }))
+  );
+
+  registerTool(
+    "upsert_exercise_glossary",
+    {
+      title: "Add or update sourced exercise glossary entries",
+      description: "Add or update one or more durable Workout Library movement guides. Every entry requires a plain-language description, actionable instructions, and a direct authoritative source URL. Use aliases for prescribed title variants and read the glossary back after writing.",
+      inputSchema: {
+        entries: z.union([
+          exerciseGlossaryEntrySchema,
+          z.array(exerciseGlossaryEntrySchema).min(1)
+        ])
+      }
+    },
+    async ({ entries }) => asText(await request("/api/exercise-glossary/upsert", {
+      method: "POST",
+      body: JSON.stringify({ entries: Array.isArray(entries) ? entries : [entries] })
     }))
   );
 
