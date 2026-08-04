@@ -38,6 +38,16 @@ const elements = {
   goalStrengthFocus: document.querySelector("#goal-strength-focus"),
   goalBackHealth: document.querySelector("#goal-back-health"),
   goalRecovery: document.querySelector("#goal-recovery"),
+  planningPeriodsList: document.querySelector("#planning-periods-list"),
+  planningPeriodForm: document.querySelector("#planning-period-form"),
+  planningPeriodId: document.querySelector("#planning-period-id"),
+  planningPeriodTitle: document.querySelector("#planning-period-title"),
+  planningPeriodStart: document.querySelector("#planning-period-start"),
+  planningPeriodEnd: document.querySelector("#planning-period-end"),
+  planningPeriodReason: document.querySelector("#planning-period-reason"),
+  planningPeriodLoad: document.querySelector("#planning-period-load"),
+  planningPeriodNotes: document.querySelector("#planning-period-notes"),
+  planningPeriodCancel: document.querySelector("#planning-period-cancel"),
   coachNotesForm: document.querySelector("#coach-notes-form"),
   coachNotes: document.querySelector("#coach-notes"),
   actualsForm: document.querySelector("#actuals-form"),
@@ -291,7 +301,7 @@ function summarizeGoals(goals) {
 function updateOverview() {
   const plan = activePlan();
   const items = activities();
-  const required = items.filter((activity) => activity.required_or_optional === "required");
+  const required = items.filter((activity) => activity.required_or_optional === "required" && !activity.excused_by_planning_period);
   const completed = required.filter((activity) => activity.completion?.completed);
   const runs = items.filter((activity) => activity.type === "run");
 
@@ -1142,7 +1152,8 @@ function renderActivity(activity, options = {}) {
   checkButton.setAttribute("aria-pressed", String(completed));
   const loggedDate = activity.completion?.logged_date;
   const loggedText = loggedDate && loggedDate !== activity.date ? ` · logged ${formatDate(loggedDate)}` : "";
-  meta.textContent = `${formatDate(activity.date)} · ${activity.type} · ${activity.required_or_optional}${loggedText}`;
+  const planningText = activity.excused_by_planning_period ? " · planned deload" : "";
+  meta.textContent = `${formatDate(activity.date)} · ${activity.type} · ${activity.required_or_optional}${planningText}${loggedText}`;
   title.textContent = activity.title;
   description.textContent = activityDescription(activity);
   equipmentTags.innerHTML = "";
@@ -1718,6 +1729,31 @@ function weekKeyForDate(date) {
   return dateKeyFromDate(value);
 }
 
+function planningAdjustmentForWeek(weekStart, targetRuns) {
+  const weekEnd = addDays(weekStart, 6);
+  const periods = (state.data?.planning_periods || state.data?.goals?.planning_periods || [])
+    .filter((period) => period.start_date <= weekEnd && period.end_date >= weekStart);
+  let fullDeloadDays = 0;
+  let reducedDays = 0;
+  for (let offset = 0; offset < 7; offset += 1) {
+    const date = addDays(weekStart, offset);
+    if (periods.some((period) => period.training_load === "full_deload" && period.start_date <= date && period.end_date >= date)) {
+      fullDeloadDays += 1;
+    } else if (periods.some((period) => period.training_load === "reduced" && period.start_date <= date && period.end_date >= date)) {
+      reducedDays += 1;
+    }
+  }
+  const volumeFactor = Math.max(0, (7 - fullDeloadDays - (reducedDays * 0.5)) / 7);
+  return {
+    periods,
+    fullDeloadDays,
+    reducedDays,
+    volumeFactor,
+    targetRuns: periods.length ? Math.max(0, Math.round(targetRuns * volumeFactor)) : targetRuns,
+    trainingLoad: fullDeloadDays ? "full_deload_overlap" : reducedDays ? "reduced" : "normal"
+  };
+}
+
 function monthFromGoalText(text) {
   const months = [
     "january", "february", "march", "april", "may", "june",
@@ -1789,6 +1825,7 @@ function buildHalfMarathonRunPlan(runs) {
   const weeks = [];
   let weekStart = currentWeekStart;
   let index = 0;
+  let postDeloadWeeks = 0;
   const totalWeeks = Math.max(1, Math.floor(dateDaysApart(currentWeekStart, raceWeekStart) / 7) + 1);
   const peakIndex = Math.max(0, totalWeeks - 3);
 
@@ -1807,19 +1844,31 @@ function buildHalfMarathonRunPlan(runs) {
       longRun = startLong + (peakLong - startLong) * progress;
       if (index > 0 && index % cutbackEveryWeeks === cutbackEveryWeeks - 1) longRun *= 0.86;
     }
-    longRun = roundDistance(longRun);
-    const distances = runDistancesForWeek(longRun, targetRuns, isRaceWeek, targetDistance);
+    const planning = planningAdjustmentForWeek(weekStart, targetRuns);
+    if (planning.fullDeloadDays) postDeloadWeeks = 2;
+    else if (postDeloadWeeks > 0) {
+      planning.volumeFactor *= postDeloadWeeks === 2 ? 0.75 : 0.9;
+      planning.targetRuns = Math.max(1, Math.round(targetRuns * planning.volumeFactor));
+      planning.trainingLoad = "post_deload_return";
+      postDeloadWeeks -= 1;
+    }
+    longRun = planning.targetRuns ? roundDistance(longRun * planning.volumeFactor) : 0;
+    const distances = planning.targetRuns ? runDistancesForWeek(longRun, planning.targetRuns, isRaceWeek, targetDistance) : [];
     const weeklyDistance = roundDistance(distances.reduce((sum, distance) => sum + distance, 0));
     weeks.push({
       weekStart,
       weekEnd: addDays(weekStart, 6),
       index,
-      targetRuns,
+      targetRuns: planning.targetRuns,
       distances,
       longRun,
       weeklyDistance,
       weeksToRace,
-      isRaceWeek
+      isRaceWeek,
+      trainingLoad: planning.trainingLoad,
+      fullDeloadDays: planning.fullDeloadDays,
+      reducedTrainingDays: planning.reducedDays,
+      planningPeriods: planning.periods
     });
     weekStart = addDays(weekStart, 7);
     index += 1;
@@ -1855,7 +1904,7 @@ function runPlanStatus(runs) {
   const plannedRuns = plan.currentWeek ? Array.from({ length: plan.currentWeek.targetRuns }, (_, index) => index) : [];
   const weekStart = plan.currentWeek?.weekStart || weekKeyForDate(todayKey());
   const week = runWeekSummary(runs, weekStart);
-  const targetRuns = plan.currentWeek?.targetRuns || Number(state.data?.goals?.run_frequency_per_week || 3);
+  const targetRuns = plan.currentWeek?.targetRuns ?? Number(state.data?.goals?.run_frequency_per_week || 3);
   const completedThisWeek = week.runs.length;
   const plannedDistance = plan.currentWeek?.weeklyDistance || 0;
   const longest = runs.reduce((best, run) => Number(run.distance_miles || 0) > Number(best?.distance_miles || 0) ? run : best, null);
@@ -1866,13 +1915,18 @@ function runPlanStatus(runs) {
   const averageHr = average(recent.map((run) => run.average_heart_rate));
   const averageDistance = average(recent.map((run) => run.distance_miles));
   const daysElapsedThisWeek = Math.min(7, Math.max(1, dateDaysApart(weekStart, todayKey()) + 1));
-  const expectedRunsByToday = Math.min(targetRuns, Math.max(1, Math.ceil((targetRuns * daysElapsedThisWeek) / 7)));
+  const expectedRunsByToday = targetRuns ? Math.min(targetRuns, Math.max(1, Math.ceil((targetRuns * daysElapsedThisWeek) / 7))) : 0;
   const expectedDistanceByToday = plannedDistance ? plannedDistance * (daysElapsedThisWeek / 7) : 0;
 
   let label = "Needs data";
   let tone = "neutral";
-  let detail = `Generated plan targets ${targetRuns} runs and ${compactNumber(plannedDistance, 1)} mi this week.`;
-  if (runs.length) {
+  let detail = plan.currentWeek?.trainingLoad === "full_deload_overlap"
+    ? "This week overlaps a planned full deload; required running is reduced to the available non-deload dates."
+    : `Generated plan targets ${targetRuns} runs and ${compactNumber(plannedDistance, 1)} mi this week.`;
+  if (targetRuns === 0) {
+    label = "Planned deload";
+    tone = "good";
+  } else if (runs.length) {
     const enoughRuns = completedThisWeek >= expectedRunsByToday;
     const enoughDistance = !expectedDistanceByToday || week.distance >= expectedDistanceByToday * 0.75;
     const recentEnough = daysSinceRun === null || daysSinceRun <= 7;
@@ -1964,7 +2018,7 @@ function renderRunPlanTable(plan, runs) {
     const row = document.createElement("div");
     row.className = `run-table-row run-plan-row${index === 0 ? " is-current" : ""}${week.isRaceWeek ? " is-race-week" : ""}`;
     row.innerHTML = `
-      <span data-label="Week">${escapeHtml(formatDate(week.weekStart))}${week.isRaceWeek ? " · race" : ""}</span>
+      <span data-label="Week">${escapeHtml(formatDate(week.weekStart))}${week.isRaceWeek ? " · race" : ""}${week.trainingLoad !== "normal" ? ` · ${escapeHtml(week.trainingLoad.replaceAll("_", " "))}` : ""}</span>
       <span data-label="Runs">${escapeHtml(String(week.targetRuns))}</span>
       <span data-label="Distances">${escapeHtml(week.distances.map((distance) => `${distance} mi`).join(" / "))}</span>
       <span data-label="Total">${escapeHtml(`${compactNumber(week.weeklyDistance, 1)} mi`)}</span>
@@ -2068,6 +2122,78 @@ function renderGoals() {
   elements.coachNotes.value = state.data?.coach_notes || "";
 }
 
+function resetPlanningPeriodForm() {
+  elements.planningPeriodForm.reset();
+  elements.planningPeriodId.value = "";
+  elements.planningPeriodReason.value = "vacation";
+  elements.planningPeriodLoad.value = "full_deload";
+  elements.planningPeriodCancel.hidden = true;
+}
+
+function editPlanningPeriod(period) {
+  elements.planningPeriodId.value = period.period_id;
+  elements.planningPeriodTitle.value = period.title;
+  elements.planningPeriodStart.value = period.start_date;
+  elements.planningPeriodEnd.value = period.end_date;
+  elements.planningPeriodReason.value = period.reason;
+  elements.planningPeriodLoad.value = period.training_load;
+  elements.planningPeriodNotes.value = period.notes || "";
+  elements.planningPeriodCancel.hidden = false;
+  elements.planningPeriodTitle.focus();
+}
+
+async function removePlanningPeriod(period) {
+  if (!window.confirm(`Remove ${period.title}?`)) return;
+  try {
+    state.data = await api(`/api/planning-periods/${encodeURIComponent(period.period_id)}`, { method: "DELETE" });
+    render();
+    await refreshCoachSummary();
+    setMessage("Planning period removed.");
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+}
+
+function renderPlanningPeriods() {
+  const periods = state.data?.planning_periods || [];
+  elements.planningPeriodsList.innerHTML = "";
+  if (!periods.length) {
+    elements.planningPeriodsList.innerHTML = `<div class="empty-state">No vacation or deload periods recorded.</div>`;
+    return;
+  }
+  periods.forEach((period) => {
+    const card = document.createElement("article");
+    card.className = "planning-period-card";
+    const copy = document.createElement("div");
+    const title = document.createElement("h4");
+    title.textContent = period.title;
+    const meta = document.createElement("p");
+    meta.className = "activity-meta";
+    meta.textContent = `${formatDate(period.start_date)}–${formatDate(period.end_date)} · ${period.reason.replaceAll("_", " ")} · ${period.training_load.replaceAll("_", " ")}`;
+    copy.append(title, meta);
+    if (period.notes) {
+      const notes = document.createElement("p");
+      notes.textContent = period.notes;
+      copy.append(notes);
+    }
+    const actions = document.createElement("div");
+    actions.className = "planning-period-card-actions";
+    const edit = document.createElement("button");
+    edit.className = "ghost-button";
+    edit.type = "button";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => editPlanningPeriod(period));
+    const remove = document.createElement("button");
+    remove.className = "ghost-button";
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => removePlanningPeriod(period));
+    actions.append(edit, remove);
+    card.append(copy, actions);
+    elements.planningPeriodsList.append(card);
+  });
+}
+
 function render() {
   activeAutosaveFlushers.clear();
   updateOverview();
@@ -2075,6 +2201,7 @@ function render() {
   renderWeek();
   renderLibrary();
   renderGoals();
+  renderPlanningPeriods();
   renderGear();
   renderActuals();
   renderRunTracking();
@@ -2271,6 +2398,7 @@ elements.goalsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const goals = {
+      ...(state.data?.goals || {}),
       primary: elements.goalPrimary.value.trim(),
       race_date: elements.goalRaceDate.value || null,
       run_frequency_per_week: elements.goalRunFrequency.value ? Number(elements.goalRunFrequency.value) : null,
@@ -2290,6 +2418,33 @@ elements.goalsForm.addEventListener("submit", async (event) => {
     setMessage(error.message, true);
   }
 });
+
+elements.planningPeriodForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const period = {
+      ...(elements.planningPeriodId.value ? { period_id: elements.planningPeriodId.value } : {}),
+      title: elements.planningPeriodTitle.value.trim(),
+      start_date: elements.planningPeriodStart.value,
+      end_date: elements.planningPeriodEnd.value,
+      reason: elements.planningPeriodReason.value,
+      training_load: elements.planningPeriodLoad.value,
+      notes: elements.planningPeriodNotes.value.trim()
+    };
+    state.data = await api("/api/planning-periods/upsert", {
+      method: "POST",
+      body: JSON.stringify({ planning_periods: [period] })
+    });
+    resetPlanningPeriodForm();
+    render();
+    await refreshCoachSummary();
+    setMessage("Planning period saved.");
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+});
+
+elements.planningPeriodCancel.addEventListener("click", resetPlanningPeriodForm);
 
 elements.coachNotesForm.addEventListener("submit", async (event) => {
   event.preventDefault();

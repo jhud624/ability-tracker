@@ -56,6 +56,9 @@ Available tools:
 - `get_current_plan`
 - `get_coach_summary`
 - `get_planning_context`
+- `get_planning_periods`
+- `upsert_planning_periods`
+- `remove_planning_period`
 - `get_run_plan`
 - `get_gear`
 - `get_audit_log`
@@ -195,3 +198,21 @@ Subtasks may be plain strings or objects. The optional `log_mode` (also accepted
 Without `log_mode`, the app infers the mode from the title: an explicit `3x10`-style prescription means strength; stretch/hold/walk/warmup wording means timed; sled/carry wording means loaded-timed.
 
 Exercise tracking is not medical advice. Stop if a movement causes pain and use professional guidance for injuries.
+
+## Vacation and deload planning
+
+Vacation and purposeful deload windows are stored separately from goals so they are not lost when goals change. Each inclusive period records why the constraint exists and the intended training load:
+
+```json
+{
+  "period_id": "period-2026-08-vacation",
+  "title": "August vacation",
+  "start_date": "2026-08-17",
+  "end_date": "2026-08-28",
+  "reason": "vacation",
+  "training_load": "full_deload",
+  "notes": "Optional walking and easy mobility only; resume progressively."
+}
+```
+
+`reason` is `vacation`, `planned_deload`, or `other`. `training_load` is `full_deload`, `reduced`, or `normal`. Planning context includes these periods and explicit guidance. Required activities dated inside a full deload are excused from adherence and miss streaks; the run-plan view reduces overlapping weeks and adds a gradual two-week return.

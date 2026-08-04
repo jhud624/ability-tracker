@@ -163,6 +163,60 @@ test("createDefaultState seeds inferred gear inventory", () => {
   assert.ok(names.includes("Weighted vest"));
   assert.ok(names.includes("Treadmill"));
   assert.ok(store.gear.find((item) => item.gear_id === "gear-weighted-vest").notes.includes("Hiking"));
+  assert.deepEqual(store.planning_periods, []);
+});
+
+test("planning periods persist into planning context and can be removed", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-planning-period-test-`);
+
+  try {
+    const created = await request(handleRequest, {
+      method: "POST",
+      path: "/api/planning-periods/upsert",
+      body: {
+        planning_periods: [{
+          period_id: "period-august-vacation",
+          title: "August vacation",
+          start_date: "2026-08-17",
+          end_date: "2026-08-28",
+          reason: "vacation",
+          training_load: "full_deload",
+          notes: "Optional walking and mobility only."
+        }]
+      }
+    });
+    assert.equal(created.statusCode, 200);
+    assert.equal(created.body.planning_periods[0].period_id, "period-august-vacation");
+
+    const context = await request(handleRequest, { path: "/api/planning-context" });
+    assert.equal(context.body.planning_periods[0].start_date, "2026-08-17");
+    assert.match(context.body.planning_guidance.join(" "), /Never schedule required work inside a full_deload/);
+
+    const invalid = await request(handleRequest, {
+      method: "POST",
+      path: "/api/planning-periods/upsert",
+      body: {
+        title: "Backwards",
+        start_date: "2026-08-28",
+        end_date: "2026-08-17",
+        reason: "vacation",
+        training_load: "reduced"
+      }
+    });
+    assert.equal(invalid.statusCode, 400);
+    assert.match(invalid.body.error, /end_date must be on or after start_date/);
+
+    const removed = await request(handleRequest, {
+      method: "DELETE",
+      path: "/api/planning-periods/period-august-vacation"
+    });
+    assert.equal(removed.statusCode, 200);
+    assert.deepEqual(removed.body.planning_periods, []);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+  }
 });
 
 test("exercise glossary stores sourced movement guides and rejects ambiguous aliases", async () => {
@@ -1714,6 +1768,32 @@ test("createStreak uses logged dates instead of planned dates", () => {
 
   assert.equal(streak.current_streak_days, 2);
   assert.deepEqual(streak.completed_dates, ["2026-06-18", "2026-06-19"]);
+});
+
+test("full deload dates are excused from adherence and required-miss streaks", () => {
+  const store = createDefaultState(new Date("2026-06-19T12:00:00"));
+  const missedActivity = store.plans[0].activities.find((activity) => (
+    activity.required_or_optional === "required" && activity.date < "2026-06-19"
+  ));
+  const baseline = createStreak(store, new Date("2026-06-19T12:00:00"));
+  store.planning_periods = [{
+    period_id: "period-one-day-deload",
+    title: "Purposeful deload",
+    start_date: missedActivity.date,
+    end_date: missedActivity.date,
+    reason: "planned_deload",
+    training_load: "full_deload",
+    notes: "Recovery day"
+  }];
+
+  const streak = createStreak(store, new Date("2026-06-19T12:00:00"));
+  const summary = createCoachSummary(store);
+  const excusedActivity = summary.planned_activities.find((activity) => activity.activity_id === missedActivity.activity_id);
+
+  assert.equal(streak.missed_required_count, baseline.missed_required_count - 1);
+  assert.equal(excusedActivity.excused_by_planning_period, true);
+  assert.equal(summary.adherence.total_required, store.plans[0].activities.filter((activity) => activity.required_or_optional === "required").length - 1);
+  assert.match(summary.summary_text, /excused by planned full deload/);
 });
 
 test("createStreak credits imported actuals for required activities outside the active plan", () => {

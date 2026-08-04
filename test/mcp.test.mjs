@@ -51,6 +51,9 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
     assert.ok(names.includes("apply_actual_workout"));
     assert.ok(names.includes("update_run_plan"));
     assert.ok(names.includes("get_run_plan"));
+    assert.ok(names.includes("get_planning_periods"));
+    assert.ok(names.includes("upsert_planning_periods"));
+    assert.ok(names.includes("remove_planning_period"));
     assert.ok(names.includes("update_coach_notes"));
     assert.ok(names.includes("save_exercise_log"));
 
@@ -124,6 +127,67 @@ test("Coach Loop MCP can patch goals and run plan without replacing goals", asyn
   } finally {
     await client.close();
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Coach Loop MCP applies a full deload to the generated run plan", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-mcp-deload-test-`);
+  const { server, url } = await startHttpServer();
+  const client = new Client({ name: "coach-loop-deload-test", version: "0.1.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["mcp/coach-loop-mcp.mjs"],
+    cwd: process.cwd(),
+    env: {
+      COACH_LOOP_API_URL: url,
+      PATH: process.env.PATH || ""
+    },
+    stderr: "pipe"
+  });
+
+  try {
+    await client.connect(transport);
+    const initialResult = await client.callTool({ name: "get_run_plan", arguments: {} });
+    const initial = JSON.parse(initialResult.content[0].text);
+    const deloadWeek = initial.run_plan.weeks[1];
+    assert.ok(deloadWeek);
+    const end = new Date(`${deloadWeek.week_start}T12:00:00`);
+    end.setDate(end.getDate() + 6);
+    const endDate = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+
+    await client.callTool({
+      name: "upsert_planning_periods",
+      arguments: {
+        planning_periods: [{
+          period_id: "period-test-deload",
+          title: "Test deload",
+          start_date: deloadWeek.week_start,
+          end_date: endDate,
+          reason: "planned_deload",
+          training_load: "full_deload",
+          notes: "No required running"
+        }]
+      }
+    });
+
+    const periodsResult = await client.callTool({ name: "get_planning_periods", arguments: {} });
+    const periods = JSON.parse(periodsResult.content[0].text);
+    assert.equal(periods[0].period_id, "period-test-deload");
+
+    const adjustedResult = await client.callTool({ name: "get_run_plan", arguments: {} });
+    const adjusted = JSON.parse(adjustedResult.content[0].text);
+    const adjustedWeek = adjusted.run_plan.weeks.find((week) => week.week_start === deloadWeek.week_start);
+    assert.equal(adjustedWeek.target_runs, 0);
+    assert.deepEqual(adjustedWeek.planned_distances_miles, []);
+    assert.equal(adjustedWeek.training_load, "full_deload_overlap");
+    const returnWeek = adjusted.run_plan.weeks.find((week) => week.week_start > deloadWeek.week_start);
+    assert.equal(returnWeek.training_load, "post_deload_return");
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
   }
 });
 

@@ -48,6 +48,15 @@ const exerciseGlossaryEntrySchema = z.object({
   source_url: z.string().url(),
   video_url: z.string().url().optional()
 }).passthrough();
+const planningPeriodSchema = z.object({
+  period_id: z.string().min(1).optional(),
+  title: z.string().min(1),
+  start_date: z.string().describe("Inclusive YYYY-MM-DD start date."),
+  end_date: z.string().describe("Inclusive YYYY-MM-DD end date."),
+  reason: z.enum(["vacation", "planned_deload", "other"]),
+  training_load: z.enum(["full_deload", "reduced", "normal"]),
+  notes: z.string().optional()
+}).passthrough();
 
 function dateKeyFromDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -75,6 +84,32 @@ function weekKeyForDate(date) {
   const day = value.getDay();
   value.setDate(value.getDate() - ((day + 6) % 7));
   return dateKeyFromDate(value);
+}
+
+function planningAdjustmentForWeek(state, weekStart, targetRuns) {
+  const weekEnd = addDays(weekStart, 6);
+  const periods = (state.planning_periods || state.goals?.planning_periods || [])
+    .filter((period) => period.start_date <= weekEnd && period.end_date >= weekStart);
+  let fullDeloadDays = 0;
+  let reducedDays = 0;
+  for (let offset = 0; offset < 7; offset += 1) {
+    const date = addDays(weekStart, offset);
+    if (periods.some((period) => period.training_load === "full_deload" && period.start_date <= date && period.end_date >= date)) {
+      fullDeloadDays += 1;
+    } else if (periods.some((period) => period.training_load === "reduced" && period.start_date <= date && period.end_date >= date)) {
+      reducedDays += 1;
+    }
+  }
+  const volumeFactor = Math.max(0, (7 - fullDeloadDays - (reducedDays * 0.5)) / 7);
+  const adjustedRuns = periods.length ? Math.max(0, Math.round(targetRuns * volumeFactor)) : targetRuns;
+  return {
+    periods,
+    fullDeloadDays,
+    reducedDays,
+    volumeFactor,
+    targetRuns: adjustedRuns,
+    trainingLoad: fullDeloadDays ? "full_deload_overlap" : reducedDays ? "reduced" : "normal"
+  };
 }
 
 function roundDistance(value) {
@@ -143,6 +178,7 @@ function buildRunPlanFromState(state = {}) {
   const weeks = [];
   let weekStart = currentWeekStart;
   let index = 0;
+  let postDeloadWeeks = 0;
   while (weekStart <= raceWeekStart && weeks.length < 32) {
     const weeksToRace = Math.max(0, Math.round(dateDaysApart(weekStart, raceWeekStart) / 7));
     const isRaceWeek = weekStart === raceWeekStart;
@@ -154,16 +190,28 @@ function buildRunPlanFromState(state = {}) {
       longRun = startLong + (peakLong - startLong) * progress;
       if (index > 0 && index % cutbackEveryWeeks === cutbackEveryWeeks - 1) longRun *= 0.86;
     }
-    longRun = roundDistance(longRun);
-    const distances = runDistancesForWeek(longRun, targetRuns, isRaceWeek, targetDistance);
+    const planning = planningAdjustmentForWeek(state, weekStart, targetRuns);
+    if (planning.fullDeloadDays) postDeloadWeeks = 2;
+    else if (postDeloadWeeks > 0) {
+      planning.volumeFactor *= postDeloadWeeks === 2 ? 0.75 : 0.9;
+      planning.targetRuns = Math.max(1, Math.round(targetRuns * planning.volumeFactor));
+      planning.trainingLoad = "post_deload_return";
+      postDeloadWeeks -= 1;
+    }
+    longRun = planning.targetRuns ? roundDistance(longRun * planning.volumeFactor) : 0;
+    const distances = planning.targetRuns ? runDistancesForWeek(longRun, planning.targetRuns, isRaceWeek, targetDistance) : [];
     const actualRuns = runs.filter((run) => run.date >= weekStart && run.date <= addDays(weekStart, 6));
     weeks.push({
       week_start: weekStart,
       week_end: addDays(weekStart, 6),
-      target_runs: targetRuns,
+      target_runs: planning.targetRuns,
       planned_distances_miles: distances,
       target_weekly_miles: roundDistance(distances.reduce((sum, distance) => sum + distance, 0)),
       target_long_run_miles: longRun,
+      training_load: planning.trainingLoad,
+      full_deload_days: planning.fullDeloadDays,
+      reduced_training_days: planning.reducedDays,
+      planning_periods: planning.periods,
       actual_runs: actualRuns.length,
       actual_miles: roundDistance(actualRuns.reduce((sum, run) => sum + Number(run.distance_miles || 0), 0)),
       weeks_to_race: weeksToRace,
@@ -323,9 +371,47 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "get_planning_context",
     {
       title: "Get planning context",
-      description: "Read goals, gear inventory, active plan, streak, and notes needed to generate gear-aware workouts."
+      description: "Read goals, vacation/deload periods, gear inventory, active plan, streak, and notes needed to generate constraint-aware workouts."
     },
     async () => asText(await request("/api/planning-context"))
+  );
+
+  registerTool(
+    "get_planning_periods",
+    {
+      title: "Get vacation and deload periods",
+      description: "Read durable date ranges that constrain workout planning, including vacations and purposeful deloads."
+    },
+    async () => asText(await request("/api/planning-periods"))
+  );
+
+  registerTool(
+    "upsert_planning_periods",
+    {
+      title: "Add or update vacation and deload periods",
+      description: "Persist one or more inclusive planning windows. Use reason for why the window exists and training_load for how much training should occur. Full deload dates must not contain required workouts.",
+      inputSchema: {
+        planning_periods: z.array(planningPeriodSchema).min(1)
+      }
+    },
+    async ({ planning_periods }) => asText(await request("/api/planning-periods/upsert", {
+      method: "POST",
+      body: JSON.stringify({ planning_periods })
+    }))
+  );
+
+  registerTool(
+    "remove_planning_period",
+    {
+      title: "Remove a vacation or deload period",
+      description: "Remove one durable planning period by period_id.",
+      inputSchema: {
+        period_id: z.string().min(1)
+      }
+    },
+    async ({ period_id }) => asText(await request(`/api/planning-periods/${encodeURIComponent(period_id)}`, {
+      method: "DELETE"
+    }))
   );
 
   registerTool(
@@ -338,6 +424,7 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
       const state = await request("/api/state");
       return asText({
         goals: state.goals,
+        planning_periods: state.planning_periods || [],
         run_plan: buildRunPlanFromState(state)
       });
     }
