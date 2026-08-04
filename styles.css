@@ -25,9 +25,13 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body { min-width: 320px; margin: 0; background: var(--paper); }
-button, input, textarea { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible {
   outline: 3px solid rgba(232, 64, 44, 0.55);
@@ -1913,6 +1917,7 @@ input, select, textarea { min-width: 0; max-width: 100%; }
 
 /* ---------- Tighter phone spacing ---------- */
 @media (max-width: 620px) {
+  input:not([type="checkbox"]), select, textarea { font-size: 16px; }
   .exercise-entry-row, .exercise-log-row { padding: 9px; gap: 7px 9px; }
   .activity-card { padding: 12px; }
   .activity-list { gap: 8px; }
