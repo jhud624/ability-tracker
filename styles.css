@@ -1164,6 +1164,78 @@ textarea {
   gap: 14px;
 }
 
+.planning-periods-panel {
+  margin-top: 16px;
+}
+
+.planning-periods-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+
+.planning-periods-heading h3,
+.planning-period-card h4 {
+  margin: 0;
+}
+
+.planning-periods-heading .field-help {
+  max-width: 560px;
+  margin: 0;
+}
+
+.planning-periods-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.planning-period-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--raised);
+}
+
+.planning-period-card p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.planning-period-card-actions,
+.planning-period-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.planning-period-actions [hidden] { display: none; }
+
+.planning-period-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) repeat(4, minmax(130px, 0.75fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.planning-period-notes,
+.planning-period-actions {
+  grid-column: 1 / -1;
+}
+
+.planning-period-notes textarea {
+  min-height: 90px;
+}
+
+@media (max-width: 980px) {
+  .planning-period-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .gear-grid {
   display: grid;
   gap: 12px;
@@ -1729,6 +1801,11 @@ h1 { max-width: none; margin-bottom: 2px; font-size: 22px; line-height: 1.1; }
 
 /* ---------- Stacked run tables on small screens ---------- */
 @media (max-width: 620px) {
+  .planning-periods-heading,
+  .planning-period-card { display: grid; }
+  .planning-period-form { grid-template-columns: 1fr; }
+  .planning-period-notes,
+  .planning-period-actions { grid-column: auto; }
   .activity-card.is-collapsible .activity-main { grid-template-columns: 40px minmax(0, 1fr) 32px; }
   .collapse-toggle { width: 32px; height: 32px; }
 

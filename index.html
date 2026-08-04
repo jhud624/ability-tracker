@@ -156,6 +156,41 @@
               <button class="primary-button" type="submit">Save Notes</button>
             </form>
           </div>
+          <div class="tool-panel planning-periods-panel">
+            <div class="planning-periods-heading">
+              <div>
+                <p class="eyebrow">Calendar constraints</p>
+                <h3>Vacation &amp; deload periods</h3>
+              </div>
+              <p class="field-help">These inclusive dates are durable inputs to weekly planning. Full-deload dates do not count as missed required workouts.</p>
+            </div>
+            <div class="planning-periods-list" id="planning-periods-list"></div>
+            <form class="planning-period-form" id="planning-period-form">
+              <input id="planning-period-id" name="period_id" type="hidden" />
+              <label>Title<input id="planning-period-title" name="title" type="text" placeholder="August vacation" required /></label>
+              <label>Start date<input id="planning-period-start" name="start_date" type="date" required /></label>
+              <label>End date<input id="planning-period-end" name="end_date" type="date" required /></label>
+              <label>Reason
+                <select id="planning-period-reason" name="reason">
+                  <option value="vacation">Vacation</option>
+                  <option value="planned_deload">Planned deload</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Training load
+                <select id="planning-period-load" name="training_load">
+                  <option value="full_deload">Full deload</option>
+                  <option value="reduced">Reduced</option>
+                  <option value="normal">Normal</option>
+                </select>
+              </label>
+              <label class="planning-period-notes">Notes<textarea id="planning-period-notes" name="notes" placeholder="Optional movement, travel constraints, or return guidance"></textarea></label>
+              <div class="planning-period-actions">
+                <button class="primary-button" type="submit">Save Period</button>
+                <button class="ghost-button" id="planning-period-cancel" type="button" hidden>Cancel Edit</button>
+              </div>
+            </form>
+          </div>
         </section>
 
         <section class="view" id="gear-view" aria-labelledby="gear-title">

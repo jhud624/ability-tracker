@@ -87,6 +87,8 @@ function arrayOfStrings(value) {
 }
 
 const SUBTASK_LOG_MODES = new Set(["strength", "timed", "loaded-timed", "check"]);
+const PLANNING_PERIOD_REASONS = new Set(["vacation", "planned_deload", "other"]);
+const PLANNING_PERIOD_LOADS = new Set(["full_deload", "reduced", "normal"]);
 // Workout groups whose sessions are logged as a single activity-level entry and
 // therefore legitimately carry no movement subtasks. Everything else must break
 // the session out into loggable exercise rows.
@@ -99,6 +101,69 @@ function normalizeRequiredOrOptional(activity) {
   const explicit = String(activity.required_or_optional || "").trim().toLowerCase();
   if (explicit === "optional" || explicit === "required") return explicit;
   return activity.target?.optional === true ? "optional" : "required";
+}
+
+function normalizePlanningPeriod(period = {}, index = 0) {
+  const startDate = String(period.start_date || "");
+  const endDate = String(period.end_date || period.start_date || "");
+  validateDateKey(startDate, `planning_periods[${index}].start_date`);
+  validateDateKey(endDate, `planning_periods[${index}].end_date`);
+  if (endDate < startDate) {
+    throw new Error(`planning_periods[${index}].end_date must be on or after start_date`);
+  }
+
+  const reason = String(period.reason || "other").toLowerCase();
+  if (!PLANNING_PERIOD_REASONS.has(reason)) {
+    throw new Error(`planning_periods[${index}].reason must be vacation, planned_deload, or other`);
+  }
+  const trainingLoad = String(period.training_load || (reason === "planned_deload" ? "full_deload" : "reduced")).toLowerCase();
+  if (!PLANNING_PERIOD_LOADS.has(trainingLoad)) {
+    throw new Error(`planning_periods[${index}].training_load must be full_deload, reduced, or normal`);
+  }
+
+  const title = String(period.title || (reason === "planned_deload" ? "Planned deload" : "Vacation")).trim();
+  const periodId = String(period.period_id || stableId("period", [startDate, endDate, reason, title]));
+  return {
+    period_id: periodId,
+    title,
+    start_date: startDate,
+    end_date: endDate,
+    reason,
+    training_load: trainingLoad,
+    notes: String(period.notes || "").trim(),
+    created_at: period.created_at || nowIso(),
+    updated_at: nowIso()
+  };
+}
+
+function normalizePlanningPeriods(periods = []) {
+  if (!Array.isArray(periods)) return [];
+  return periods
+    .map((period, index) => {
+      try {
+        return normalizePlanningPeriod(period, index);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.start_date.localeCompare(b.start_date) || a.end_date.localeCompare(b.end_date));
+}
+
+function planningPeriodsForRange(store, startDate, endDate = startDate) {
+  return (store.planning_periods || [])
+    .filter((period) => period.start_date <= endDate && period.end_date >= startDate)
+    .sort((a, b) => a.start_date.localeCompare(b.start_date) || a.end_date.localeCompare(b.end_date));
+}
+
+function planningPeriodGuidance(periods = []) {
+  if (!periods.length) return [];
+  return [
+    "Planning periods are intentional constraints, not missed training.",
+    "Never schedule required work inside a full_deload date range; optional walking, mobility, or recovery work is allowed only when it supports the stated intent.",
+    "For reduced periods, lower volume and intensity, favor flexible or equipment-light sessions, and do not compensate by cramming work before or after the period.",
+    "Resume progressively after a full deload instead of immediately making up skipped volume."
+  ];
 }
 
 function normalizeSubtaskLogMode(value) {
@@ -510,6 +575,7 @@ function createDefaultState(referenceDate = new Date()) {
     gear: buildDefaultGearInventory(),
     exercise_glossary: [],
     references: buildDefaultReferences(),
+    planning_periods: [],
     coach_notes: "",
     completions: {},
     feedback: {},
@@ -568,6 +634,9 @@ function migrateStore(store) {
     references: references.map((reference) => reference.reference_id === "ref-atg-back-ability"
       ? { ...reference, notes: ATG_REFERENCE_NOTES }
       : reference),
+    planning_periods: normalizePlanningPeriods(
+      Array.isArray(store.planning_periods) ? store.planning_periods : store.goals?.planning_periods
+    ),
     coach_notes: typeof store.coach_notes === "string" ? store.coach_notes : "",
     health: {
       actual_workouts: Array.isArray(health.actual_workouts) ? health.actual_workouts.map(normalizeActualWorkout) : [],
@@ -833,6 +902,8 @@ function activityWithState(activity, store) {
   const exerciseLogs = store.exercise_logs?.[activity.activity_id] || {};
   const matchedActuals = actualsForActivity(activity, store);
   const actualCompletion = matchedActuals[0] || null;
+  const planningPeriods = planningPeriodsForRange(store, activity.date);
+  const excusedByPlanningPeriod = planningPeriods.some((period) => period.training_load === "full_deload");
   return {
     ...activity,
     equipment: inferEquipmentForActivity(activity),
@@ -845,6 +916,8 @@ function activityWithState(activity, store) {
     exercise_logs: exerciseLogs,
     actuals: matchedActuals,
     actual_match_candidates: actualMatchCandidates(activity, store),
+    planning_periods: planningPeriods,
+    excused_by_planning_period: excusedByPlanningPeriod,
     feedback: store.feedback[activity.activity_id] || null
   };
 }
@@ -1494,6 +1567,7 @@ function daysBetween(startDateKey, endDateKey) {
 function requiredActivitiesByDate(store) {
   return allPlanActivities(store)
     .filter((activity) => activity.required_or_optional === "required" && /^\d{4}-\d{2}-\d{2}$/.test(activity.date))
+    .filter((activity) => !planningPeriodsForRange(store, activity.date).some((period) => period.training_load === "full_deload"))
     .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
 }
 
@@ -1777,9 +1851,11 @@ function createCoachSummary(store) {
   const end = weekEndDate(plan);
   const daily_metrics = (store.health.daily_metrics || []).filter((metric) => metric.date >= start && metric.date <= end);
   const completedRequired = planned_activities.filter((activity) => (
-    activity.required_or_optional === "required" && activity.completion.completed
+    activity.required_or_optional === "required" && !activity.excused_by_planning_period && activity.completion.completed
   )).length;
-  const totalRequired = planned_activities.filter((activity) => activity.required_or_optional === "required").length;
+  const totalRequired = planned_activities.filter((activity) => (
+    activity.required_or_optional === "required" && !activity.excused_by_planning_period
+  )).length;
   const runActuals = planned_activities.flatMap((activity) => activity.type === "run" ? activity.actuals : []);
   const totalRunDistance = runActuals.reduce((sum, actual) => sum + Number(actual.distance_miles || actual.distance_km || 0), 0);
 
@@ -1787,6 +1863,8 @@ function createCoachSummary(store) {
     generated_at: nowIso(),
     goals: store.goals,
     coach_notes: store.coach_notes || "",
+    planning_periods: store.planning_periods || [],
+    planning_guidance: planningPeriodGuidance(store.planning_periods || []),
     streak: createStreak(store),
     gear: store.gear || [],
     references: store.references || [],
@@ -1813,6 +1891,9 @@ function createCoachSummary(store) {
     "",
     `Primary goal: ${store.goals.primary || "Not set"}`,
     store.coach_notes ? `Coach notes: ${store.coach_notes}` : "Coach notes: none",
+    (store.planning_periods || []).length
+      ? `Planning periods: ${(store.planning_periods || []).map((period) => `${period.start_date} to ${period.end_date} ${period.title} (${period.reason}, ${period.training_load})`).join("; ")}`
+      : "Planning periods: none",
     `Days without a required miss: ${summaryJson.streak.days_without_miss}`,
     `Weeks without a required miss: ${summaryJson.streak.weeks_without_miss}`,
     `Logged workout date streak: ${summaryJson.streak.current_streak_days} day(s)`,
@@ -1835,7 +1916,8 @@ function createCoachSummary(store) {
     const feedback = feedbackPieces.length ? ` | ${feedbackPieces.join(", ")}` : "";
     const activityVolume = Object.values(activity.exercise_logs || {}).reduce((sum, log) => sum + exerciseVolume(log), 0);
     const volume = activityVolume ? ` | total weight moved ${activityVolume} lb` : "";
-    lines.push(`- ${activity.date}: ${activity.title} (${activity.type}, ${activity.required_or_optional}) - ${status}${loggedText}${feedback}${volume}`);
+    const planningLabel = activity.excused_by_planning_period ? " | excused by planned full deload" : "";
+    lines.push(`- ${activity.date}: ${activity.title} (${activity.type}, ${activity.required_or_optional}) - ${status}${loggedText}${feedback}${volume}${planningLabel}`);
     Object.entries(activity.exercise_logs || {}).forEach(([exerciseId, log]) => {
       const total = exerciseVolume(log);
       const duration = formatExerciseDuration(log);
@@ -2212,6 +2294,8 @@ async function handleApi(req, res, pathname) {
     sendJson(res, 200, {
       goals: store.goals,
       coach_notes: store.coach_notes || "",
+      planning_periods: store.planning_periods || [],
+      planning_guidance: planningPeriodGuidance(store.planning_periods || []),
       gear: store.gear || [],
       exercise_glossary: store.exercise_glossary || [],
       references: store.references || [],
@@ -2222,6 +2306,40 @@ async function handleApi(req, res, pathname) {
         "Use gear.status to avoid unavailable or limited equipment when generating plans."
       ]
     });
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/api/planning-periods") {
+    if (!requireReadAuth(req, res)) return;
+    sendJson(res, 200, store.planning_periods || []);
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/planning-periods/upsert") {
+    if (!requireWriteAuth(req, res)) return;
+    const body = await readJsonBody(req);
+    const rawPeriods = Array.isArray(body) ? body : (body.planning_periods || [body.planning_period || body]);
+    if (!Array.isArray(rawPeriods) || !rawPeriods.length) throw new Error("planning_periods must include at least one period");
+    const incoming = rawPeriods.map((period, index) => normalizePlanningPeriod(period, index));
+    const nextStore = await updateStore((current) => ({
+      ...current,
+      planning_periods: upsertById(current.planning_periods || [], incoming, "period_id")
+        .map((period, index) => normalizePlanningPeriod(period, index))
+        .sort((a, b) => a.start_date.localeCompare(b.start_date) || a.end_date.localeCompare(b.end_date))
+    }), { action: "planning_period.upsert", target: incoming.map((period) => period.period_id).join(",") });
+    sendJson(res, 200, publicState(nextStore));
+    return;
+  }
+
+  const planningPeriodMatch = pathname.match(/^\/api\/planning-periods\/([^/]+)$/);
+  if (req.method === "DELETE" && planningPeriodMatch) {
+    if (!requireWriteAuth(req, res)) return;
+    const periodId = decodeURIComponent(planningPeriodMatch[1]);
+    const nextStore = await updateStore((current) => ({
+      ...current,
+      planning_periods: (current.planning_periods || []).filter((period) => period.period_id !== periodId)
+    }), { action: "planning_period.delete", target: periodId });
+    sendJson(res, 200, publicState(nextStore));
     return;
   }
 
@@ -2713,7 +2831,7 @@ async function handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
-        "access-control-allow-methods": "GET,POST,PUT,PATCH,OPTIONS",
+        "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
         "access-control-allow-headers": "content-type, authorization, mcp-session-id"
       });
       res.end();
