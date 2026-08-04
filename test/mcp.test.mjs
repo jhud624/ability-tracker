@@ -42,6 +42,8 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
     assert.ok(names.includes("get_coach_summary"));
     assert.ok(names.includes("get_gear"));
     assert.ok(names.includes("upsert_gear"));
+    assert.ok(names.includes("get_exercise_glossary"));
+    assert.ok(names.includes("upsert_exercise_glossary"));
     assert.ok(names.includes("import_weekly_plan"));
     assert.ok(names.includes("update_day_plan"));
     assert.ok(names.includes("update_goals"));
@@ -167,12 +169,35 @@ test("Coach Loop hosted MCP writes persist through the protected API path", asyn
         }
       }
     });
+    await client.callTool({
+      name: "upsert_exercise_glossary",
+      arguments: {
+        entries: [{
+          canonical_name: "Dead bug",
+          aliases: ["Dead bug core exercise"],
+          description: "A floor-based trunk-control movement.",
+          instructions: ["Lie on your back", "Brace gently", "Lower opposite arm and leg with control"],
+          cues: ["Keep the low back quiet"],
+          cautions: ["Reduce the range if the back arches"],
+          equipment: ["floor mat"],
+          source_title: "Dead Bug Exercise Guide",
+          source_publisher: "Example Training Organization",
+          source_url: "https://example.org/exercises/dead-bug"
+        }]
+      }
+    });
+    const glossaryResult = await client.callTool({ name: "get_exercise_glossary", arguments: {} });
+    const glossary = JSON.parse(glossaryResult.content[0].text);
+    assert.ok(Array.isArray(glossary), JSON.stringify(glossary));
+    assert.equal(glossary.length, 1);
+    assert.equal(glossary[0].canonical_name, "Dead bug");
     const response = await fetch(`${url}/api/state`, {
       headers: { authorization: "Bearer test-api-token" }
     });
     assert.equal(response.status, 200);
     const state = await response.json();
     assert.equal(state.goals.primary, "Persist hosted MCP writes");
+    assert.equal(state.exercise_glossary[0].canonical_name, "Dead bug");
   } finally {
     await client.close();
     await new Promise((resolve) => server.close(resolve));

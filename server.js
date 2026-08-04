@@ -288,6 +288,88 @@ function normalizeGearItem(input) {
   };
 }
 
+function normalizeGlossaryUrl(value, field, required = false) {
+  const text = String(value || "").trim();
+  if (!text) {
+    if (required) throw new Error(`${field} is required`);
+    return "";
+  }
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw new Error(`${field} must be a valid HTTP(S) URL`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`${field} must be a valid HTTP(S) URL`);
+  }
+  return parsed.toString();
+}
+
+function normalizeGlossaryKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function normalizeExerciseGlossaryEntry(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Exercise glossary entry must be an object");
+  }
+  const canonicalName = String(input.canonical_name || input.name || "").trim();
+  if (!canonicalName) throw new Error("Exercise glossary canonical_name is required");
+  const description = String(input.description || input.summary || "").trim();
+  if (!description) throw new Error(`Exercise glossary description is required for ${canonicalName}`);
+  const instructions = arrayOfStrings(input.instructions || input.steps);
+  if (!instructions.length) throw new Error(`Exercise glossary instructions are required for ${canonicalName}`);
+  const sourceUrl = normalizeGlossaryUrl(input.source_url || input.source?.url, "source_url", true);
+  const sourceTitle = String(input.source_title || input.source?.title || "").trim();
+  if (!sourceTitle) throw new Error(`Exercise glossary source_title is required for ${canonicalName}`);
+  const sourcePublisher = String(input.source_publisher || input.source?.publisher || "").trim();
+  const glossaryId = String(input.glossary_id || input.id || stableId("exercise", [canonicalName]));
+  return {
+    glossary_id: glossaryId,
+    canonical_name: canonicalName,
+    aliases: [...new Set(arrayOfStrings(input.aliases).filter((alias) => normalizeGlossaryKey(alias) !== normalizeGlossaryKey(canonicalName)))],
+    description,
+    instructions,
+    cues: arrayOfStrings(input.cues),
+    cautions: arrayOfStrings(input.cautions),
+    equipment: arrayOfStrings(input.equipment),
+    source_title: sourceTitle,
+    source_publisher: sourcePublisher,
+    source_url: sourceUrl,
+    video_url: normalizeGlossaryUrl(input.video_url || input.source?.video_url, "video_url"),
+    updated_at: input.updated_at || nowIso()
+  };
+}
+
+function upsertExerciseGlossary(existing, incoming) {
+  const next = [...(existing || [])];
+  incoming.forEach((entry) => {
+    const key = normalizeGlossaryKey(entry.canonical_name);
+    const index = next.findIndex((item) => (
+      item.glossary_id === entry.glossary_id || normalizeGlossaryKey(item.canonical_name) === key
+    ));
+    if (index >= 0) next[index] = entry;
+    else next.push(entry);
+  });
+  const claimedNames = new Map();
+  next.forEach((entry) => {
+    [entry.canonical_name, ...(entry.aliases || [])].forEach((name) => {
+      const key = normalizeGlossaryKey(name);
+      const owner = claimedNames.get(key);
+      if (key && owner && owner !== entry.glossary_id) {
+        throw new Error(`Exercise glossary name or alias \"${name}\" is already claimed by another entry`);
+      }
+      if (key) claimedNames.set(key, entry.glossary_id);
+    });
+  });
+  return next.sort((a, b) => a.canonical_name.localeCompare(b.canonical_name));
+}
+
 function buildDefaultPlan(referenceDate = new Date()) {
   const start = weekStartFor(referenceDate);
   const days = Array.from({ length: 7 }, (_, index) => dateKey(addDays(start, index)));
@@ -426,6 +508,7 @@ function createDefaultState(referenceDate = new Date()) {
     active_plan_id: plan.plan_id,
     plans: [plan],
     gear: buildDefaultGearInventory(),
+    exercise_glossary: [],
     references: buildDefaultReferences(),
     coach_notes: "",
     completions: {},
@@ -479,6 +562,9 @@ function migrateStore(store) {
     ...store,
     plans: Array.isArray(store.plans) ? store.plans.map(normalizePlanForCurrentSchema) : [],
     gear: Array.isArray(store.gear) && store.gear.length ? store.gear.map((item) => normalizeGearItem(item)) : buildDefaultGearInventory(),
+    exercise_glossary: Array.isArray(store.exercise_glossary)
+      ? store.exercise_glossary.map((item) => normalizeExerciseGlossaryEntry(item))
+      : [],
     references: references.map((reference) => reference.reference_id === "ref-atg-back-ability"
       ? { ...reference, notes: ATG_REFERENCE_NOTES }
       : reference),
@@ -1872,6 +1958,7 @@ function originFor(req) {
 const MCP_WRITE_TOOLS = new Set([
   "upsert_gear",
   "remove_gear",
+  "upsert_exercise_glossary",
   "import_weekly_plan",
   "update_day_plan",
   "link_actual_to_activity",
@@ -1989,6 +2076,7 @@ function publicState(store) {
     ...store,
     streak: createStreak(store),
     gear: store.gear || [],
+    exercise_glossary: store.exercise_glossary || [],
     references: store.references || [],
     coach_notes: store.coach_notes || "",
     active_plan: plan ? {
@@ -2125,6 +2213,7 @@ async function handleApi(req, res, pathname) {
       goals: store.goals,
       coach_notes: store.coach_notes || "",
       gear: store.gear || [],
+      exercise_glossary: store.exercise_glossary || [],
       references: store.references || [],
       active_plan: publicState(store).active_plan,
       streak: createStreak(store),
@@ -2139,6 +2228,12 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && pathname === "/api/gear") {
     if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, store.gear || []);
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/api/exercise-glossary") {
+    if (!requireReadAuth(req, res)) return;
+    sendJson(res, 200, store.exercise_glossary || []);
     return;
   }
 
@@ -2279,6 +2374,30 @@ async function handleApi(req, res, pathname) {
       return { ...current, gear };
     }, { action: "gear.upsert", target: normalizedIncoming.map((item) => item.gear_id).join(",") });
     sendJson(res, 200, publicState(nextStore));
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/exercise-glossary/upsert") {
+    if (!requireWriteAuth(req, res)) return;
+    const body = await readJsonBody(req);
+    const incoming = Array.isArray(body.entries)
+      ? body.entries
+      : Array.isArray(body.items)
+        ? body.items
+        : [body.entry || body.item || body];
+    const normalizedIncoming = incoming.map((item) => normalizeExerciseGlossaryEntry({ ...item, updated_at: nowIso() }));
+    try {
+      const nextStore = await updateStore((current) => ({
+        ...current,
+        exercise_glossary: upsertExerciseGlossary(current.exercise_glossary || [], normalizedIncoming)
+      }), {
+        action: "exercise_glossary.upsert",
+        target: normalizedIncoming.map((item) => item.glossary_id).join(",")
+      });
+      sendJson(res, 200, publicState(nextStore));
+    } catch (error) {
+      sendError(res, error.statusCode || 400, error.message || "Unable to update exercise glossary");
+    }
     return;
   }
 

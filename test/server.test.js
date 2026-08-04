@@ -165,6 +165,81 @@ test("createDefaultState seeds inferred gear inventory", () => {
   assert.ok(store.gear.find((item) => item.gear_id === "gear-weighted-vest").notes.includes("Hiking"));
 });
 
+test("exercise glossary stores sourced movement guides and rejects ambiguous aliases", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-glossary-test-`);
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  const splitSquat = {
+    canonical_name: "ATG split squat",
+    aliases: ["Split squat stretch"],
+    description: "A supported single-leg strength and mobility movement.",
+    instructions: ["Use a stable support", "Lower under control", "Drive through the front foot"],
+    cues: ["Keep the front heel down"],
+    cautions: ["Use a pain-free range"],
+    equipment: ["stable support"],
+    source_title: "Split Squat Exercise Guide",
+    source_publisher: "Example Training Organization",
+    source_url: "https://example.org/exercises/split-squat",
+    video_url: "https://www.youtube.com/watch?v=qfpkwZlG-cs"
+  };
+
+  try {
+    const empty = await request(handleRequest, { path: "/api/exercise-glossary" });
+    assert.equal(empty.statusCode, 200);
+    assert.deepEqual(empty.body, []);
+
+    const created = await request(handleRequest, {
+      method: "POST",
+      path: "/api/exercise-glossary/upsert",
+      body: { entries: [splitSquat] }
+    });
+    assert.equal(created.statusCode, 200);
+    assert.equal(created.body.exercise_glossary.length, 1);
+    assert.match(created.body.exercise_glossary[0].glossary_id, /^exercise-/);
+    assert.equal(created.body.exercise_glossary[0].canonical_name, "ATG split squat");
+    assert.equal(created.body.audit_events.at(-1).action, "exercise_glossary.upsert");
+
+    const updated = await request(handleRequest, {
+      method: "POST",
+      path: "/api/exercise-glossary/upsert",
+      body: {
+        entry: {
+          ...splitSquat,
+          description: "Updated plain-language guidance.",
+          aliases: ["Split squat stretch", "Supported ATG split squat"]
+        }
+      }
+    });
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.body.exercise_glossary.length, 1);
+    assert.equal(updated.body.exercise_glossary[0].description, "Updated plain-language guidance.");
+
+    const conflict = await request(handleRequest, {
+      method: "POST",
+      path: "/api/exercise-glossary/upsert",
+      body: {
+        entry: {
+          ...splitSquat,
+          canonical_name: "Different movement",
+          aliases: ["Split squat stretch"]
+        }
+      }
+    });
+    assert.equal(conflict.statusCode, 400);
+    assert.match(conflict.body.error, /already claimed/);
+
+    const planningContext = await request(handleRequest, { path: "/api/planning-context" });
+    assert.equal(planningContext.body.exercise_glossary.length, 1);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
 test("private read endpoints require owner auth when an API token is configured", async () => {
   const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
   const previousApiToken = process.env.COACH_LOOP_API_TOKEN;

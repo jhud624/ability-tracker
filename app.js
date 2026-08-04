@@ -328,8 +328,55 @@ function youtubeSearchUrl(query) {
   return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${query} exercise form`)}`;
 }
 
+function normalizedMovementLookupKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function youtubeVideoId(value) {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    if (url.hostname === "youtu.be") return url.pathname.split("/").filter(Boolean)[0] || "";
+    if (url.hostname.endsWith("youtube.com")) {
+      if (url.pathname === "/watch") return url.searchParams.get("v") || "";
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (["shorts", "embed"].includes(parts[0])) return parts[1] || "";
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function glossaryMovementReference(title) {
+  const lookup = normalizedMovementLookupKey(baseExerciseTitle(title));
+  const entry = (state.data?.exercise_glossary || []).find((item) => (
+    [item.canonical_name, ...(item.aliases || [])]
+      .some((name) => normalizedMovementLookupKey(name) === lookup)
+  ));
+  if (!entry) return null;
+  const videoUrl = entry.video_url || "";
+  return {
+    title: entry.canonical_name,
+    description: entry.description,
+    instructions: entry.instructions || [],
+    cues: entry.cues || [],
+    cautions: entry.cautions || [],
+    sourceTitle: entry.source_title || "Source",
+    sourcePublisher: entry.source_publisher || "",
+    sourceUrl: entry.source_url || videoUrl,
+    videoUrl,
+    videoId: youtubeVideoId(videoUrl || entry.source_url),
+    alternatives: entry.aliases || []
+  };
+}
+
 function movementReference(title) {
-  return movementCatalog.find((item) => item.match.test(title)) || {
+  return glossaryMovementReference(title) || movementCatalog.find((item) => item.match.test(title)) || {
     title,
     description: "Use controlled reps, a setup that respects your back, and a load or pace that matches the day’s intent.",
     videoId: "",
@@ -1326,13 +1373,15 @@ function renderLibrary() {
 
     const movementList = document.createElement("div");
     movementList.className = "movement-list";
-    const sourceMovements = (activity.subtasks && activity.subtasks.length ? activity.subtasks : [{ title: activity.title }]).slice(0, 5);
+    const sourceMovements = activity.subtasks && activity.subtasks.length ? activity.subtasks : [{ title: activity.title }];
     sourceMovements.forEach((movement) => {
       const reference = movementReference(movement.title);
       const link = document.createElement("a");
       link.className = "movement-card";
       link.dataset.movementKey = normalizedExerciseKey(movement.title);
-      link.href = reference.videoId ? `https://www.youtube.com/watch?v=${reference.videoId}` : youtubeSearchUrl(movement.title);
+      link.href = reference.sourceUrl || reference.videoUrl || (reference.videoId
+        ? `https://www.youtube.com/watch?v=${reference.videoId}`
+        : youtubeSearchUrl(movement.title));
       link.target = "_blank";
       link.rel = "noreferrer";
 
@@ -1355,6 +1404,26 @@ function renderLibrary() {
       const movementDescription = document.createElement("span");
       movementDescription.textContent = reference.description;
       copy.append(movementTitle, movementDescription);
+      if (reference.instructions?.length) {
+        const instructions = document.createElement("span");
+        instructions.textContent = `How: ${reference.instructions.slice(0, 4).join(" → ")}`;
+        copy.append(instructions);
+      }
+      if (reference.cues?.length) {
+        const cues = document.createElement("span");
+        cues.textContent = `Cues: ${reference.cues.slice(0, 3).join(" · ")}`;
+        copy.append(cues);
+      }
+      if (reference.cautions?.length) {
+        const cautions = document.createElement("span");
+        cautions.textContent = `Watch for: ${reference.cautions.slice(0, 2).join(" · ")}`;
+        copy.append(cautions);
+      }
+      if (reference.sourceUrl) {
+        const source = document.createElement("span");
+        source.textContent = `Source: ${[reference.sourcePublisher, reference.sourceTitle].filter(Boolean).join(" — ")}`;
+        copy.append(source);
+      }
       link.append(visual, copy);
       movementList.append(link);
     });
