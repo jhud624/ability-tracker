@@ -1711,14 +1711,25 @@ test("createCoachSummary includes completion and feedback context", () => {
   store.completions[activity.activity_id] = { completed: true, subtasks: {}, completed_at: "2026-06-19T12:00:00.000Z" };
   store.feedback[activity.activity_id] = { difficulty: 7, energy: 4, soreness: 2, back_pain: 1, notes: "Felt good" };
   store.coach_notes = "Prefer simple run prescriptions by distance.";
+  store.coach_memories = [{
+    memory_id: "memory-workout-tone",
+    key: "workout-tone",
+    kind: "preference",
+    category: "communication",
+    text: "Keep workout instructions concise.",
+    created_at: "2026-06-19T12:00:00.000Z",
+    updated_at: "2026-06-19T12:00:00.000Z"
+  }];
 
   const summary = createCoachSummary(store);
 
   assert.equal(summary.adherence.completed_required, 1);
   assert.equal(summary.coach_notes, "Prefer simple run prescriptions by distance.");
+  assert.equal(summary.coach_memories[0].key, "workout-tone");
   assert.ok(summary.gear.length > 0);
   assert.match(summary.summary_text, /Available gear:/);
   assert.match(summary.summary_text, /Prefer simple run prescriptions by distance/);
+  assert.match(summary.summary_text, /Keep workout instructions concise/);
   assert.match(summary.summary_text, /Felt good/);
   assert.equal(summary.planned_activities[0].feedback.difficulty, 7);
 });

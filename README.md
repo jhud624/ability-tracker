@@ -11,7 +11,7 @@ A local-first workout coaching dashboard that lets ChatGPT generate weekly plans
 - Persistent activity and subtask checkoffs
 - On-the-fly workout switching from other scheduled sessions
 - Quick difficulty and back-pain logging
-- Goal editing and durable coach notes
+- Goal editing, durable coach notes, and independently editable memories/preferences
 - Weekly plan import from ChatGPT JSON
 - HealthKit-style actual workout and recovery metric import
 - Coach summary export for ChatGPT
@@ -70,10 +70,39 @@ Available tools:
 - `patch_goals`
 - `update_run_plan`
 - `update_coach_notes`
+- `get_coaching_memories`
+- `upsert_coaching_memories`
+- `remove_coaching_memory`
 - `mark_activity`
 - `save_activity_feedback`
 - `save_exercise_log`
 - `import_health_actuals`
+
+### Conversational memories and preferences
+
+The ChatGPT connector can save durable Coach Loop context without replacing the freeform coach-notes field. Natural requests such as these map to the structured memory tools:
+
+- “Remember that I prefer run prescriptions by distance, not time.”
+- “From now on, keep workout instructions concise.”
+- “Update my run-prescription preference to use both distance and effort.”
+- “What does Coach Loop remember about me?”
+- “Forget the concise-instructions preference.”
+
+Each memory has a stable key, kind (`preference`, `fact`, or `constraint`), category, and text. Reusing a key updates that one item while preserving unrelated memories. The Goals view provides a visible audit/edit/delete surface, and memories are included in planning context and coach summaries.
+
+### Daily learning and timing
+
+`save_activity_feedback` accepts `coach_memories` alongside workout feedback and saves both atomically. Capture explicit durable preferences (“I like…” / “I prefer…”); do not promote transient soreness or an observed outcome to a permanent rule. Preserve `source_quote` and `source_event_id`, reuse the existing key, and pass `expected_version` when correcting a memory. Memory history retains the previous 20 versions. Optional inclusive `effective_from` and `expires_at` dates keep temporary constraints out of later planning.
+
+For between-set active rest, save `rule: {"sequence":"alternate_sets"}`. Strength activities must then include `blocks` referencing distinct movement subtask IDs and `preference_applications` containing the current memory key/version, or an explicit `exception_reason`. Three work sets have two between-set active-rest bouts by default. These rules are checked on weekly import and day updates; existing conflicting plans show review notices.
+
+Planning context and summary include `coaching_brief`: active preferences, application guidance, duration observations, and personal suggestions. Always read it before drafting a daily or weekly plan. Separate `target.time_budget_minutes` from `target.estimated_duration_minutes`; legacy `duration_minutes` remains compatible. A shorter forecast does not automatically change training dose.
+
+Accepted plans save immutable duration forecast revisions. Users can report actual minutes and confirm “Full session as prescribed,” or exclude interrupted/changed work. Matching Health records alone do not establish full completion. Personal suggestions use the median of the latest eight eligible, identically prescribed previous strength sessions, with at least three samples. Different volumes, ambiguous matches, retrospective forecasts, and partial sessions do not train the estimate. Manual durations require a forecast from an earlier calendar day; this conservative rule avoids learning from a same-day forecast entered after training. Suggestions are advisory and never rewrite an accepted forecast or prescription.
+
+The first release intentionally has no automatic free-text classifier running in the browser: the coaching conversation interprets preferences and persists them through the typed tools. Notes entered directly in the workout UI remain notes until the coach or user explicitly saves a preference. Historical sessions without original forecast snapshots remain visible but are not calibration samples.
+
+Preview deployments automatically use a separate Redis key derived from the Git branch or deployment URL, unless an explicit `COACH_LOOP_STORE_KEY` overrides it. Never override a preview with the production key. `scripts/seed-coaching-review.cjs` seeds synthetic examples into an explicitly selected review URL via `COACH_REVIEW_URL` (and optional `COACH_REVIEW_TOKEN`).
 
 For a deployed Coach Loop URL, set `COACH_LOOP_API_URL` to that origin.
 

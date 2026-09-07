@@ -55,7 +55,13 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
     assert.ok(names.includes("upsert_planning_periods"));
     assert.ok(names.includes("remove_planning_period"));
     assert.ok(names.includes("update_coach_notes"));
+    assert.ok(names.includes("get_coaching_memories"));
+    assert.ok(names.includes("upsert_coaching_memories"));
+    assert.ok(names.includes("remove_coaching_memory"));
     assert.ok(names.includes("save_exercise_log"));
+    assert.equal(tools.tools.find((tool) => tool.name === "get_coaching_memories").annotations.readOnlyHint, true);
+    assert.equal(tools.tools.find((tool) => tool.name === "upsert_coaching_memories").annotations.destructiveHint, false);
+    assert.equal(tools.tools.find((tool) => tool.name === "remove_coaching_memory").annotations.destructiveHint, true);
 
     const result = await client.callTool({ name: "get_coach_summary", arguments: {} });
     assert.equal(result.content[0].type, "text");
@@ -73,6 +79,60 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
   } finally {
     await client.close();
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Coach Loop MCP can remember, update, and forget one preference without replacing others", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-mcp-memory-test-`);
+  const { server, url } = await startHttpServer();
+  const client = new Client({ name: "coach-loop-memory-test", version: "0.1.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["mcp/coach-loop-mcp.mjs"],
+    cwd: process.cwd(),
+    env: {
+      COACH_LOOP_API_URL: url,
+      PATH: process.env.PATH || ""
+    },
+    stderr: "pipe"
+  });
+
+  try {
+    await client.connect(transport);
+    await client.callTool({
+      name: "upsert_coaching_memories",
+      arguments: {
+        coach_memories: [
+          { key: "run-prescription-style", kind: "preference", category: "running", text: "Prefer run prescriptions by distance." },
+          { key: "workout-tone", kind: "preference", category: "communication", text: "Keep workout instructions concise." }
+        ]
+      }
+    });
+    await client.callTool({
+      name: "upsert_coaching_memories",
+      arguments: {
+        coach_memories: [
+          { key: "run-prescription-style", kind: "preference", category: "running", text: "Prefer run prescriptions by distance, not time." }
+        ]
+      }
+    });
+
+    const memoriesResult = await client.callTool({ name: "get_coaching_memories", arguments: {} });
+    const memories = JSON.parse(memoriesResult.content[0].text).coach_memories;
+    assert.equal(memories.length, 2);
+    assert.equal(memories.find((memory) => memory.key === "run-prescription-style").text, "Prefer run prescriptions by distance, not time.");
+
+    const communication = memories.find((memory) => memory.key === "workout-tone");
+    await client.callTool({ name: "remove_coaching_memory", arguments: { memory_id: communication.memory_id } });
+    const afterResult = await client.callTool({ name: "get_coaching_memories", arguments: {} });
+    const after = JSON.parse(afterResult.content[0].text).coach_memories;
+    assert.deepEqual(after.map((memory) => memory.key), ["run-prescription-style"]);
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
   }
 });
 

@@ -16,7 +16,15 @@ function storePath() {
 }
 
 function storeKey() {
-  return process.env.COACH_LOOP_STORE_KEY || "coach-loop:store";
+  if (process.env.COACH_LOOP_STORE_KEY) return process.env.COACH_LOOP_STORE_KEY;
+  // Preview deployments must never inherit the production data key when the
+  // hosting integration provides the same Redis credentials to both targets.
+  if (process.env.VERCEL_ENV === "preview") {
+    const branch = process.env.VERCEL_GIT_COMMIT_REF || process.env.VERCEL_URL;
+    if (!branch) throw new Error("Preview requires a branch, deployment URL, or explicit COACH_LOOP_STORE_KEY");
+    return `coach-loop:preview:${branch}`;
+  }
+  return "coach-loop:store";
 }
 
 function lockKey() {

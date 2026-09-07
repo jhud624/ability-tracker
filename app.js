@@ -50,6 +50,14 @@ const elements = {
   planningPeriodCancel: document.querySelector("#planning-period-cancel"),
   coachNotesForm: document.querySelector("#coach-notes-form"),
   coachNotes: document.querySelector("#coach-notes"),
+  coachMemoriesList: document.querySelector("#coach-memories-list"),
+  coachMemoryForm: document.querySelector("#coach-memory-form"),
+  coachMemoryId: document.querySelector("#coach-memory-id"),
+  coachMemoryKey: document.querySelector("#coach-memory-key"),
+  coachMemoryKind: document.querySelector("#coach-memory-kind"),
+  coachMemoryCategory: document.querySelector("#coach-memory-category"),
+  coachMemoryText: document.querySelector("#coach-memory-text"),
+  coachMemoryCancel: document.querySelector("#coach-memory-cancel"),
   actualsForm: document.querySelector("#actuals-form"),
   actualsJson: document.querySelector("#actuals-json"),
   actualsList: document.querySelector("#actuals-list"),
@@ -310,7 +318,7 @@ function updateOverview() {
     month: "long",
     day: "numeric"
   }).format(new Date());
-  elements.goalSummary.textContent = summarizeGoals(state.data?.goals);
+  elements.goalSummary.textContent = state.data?.review_environment ? "Review preview · separate sample data; your live workout history is unchanged." : summarizeGoals(state.data?.goals);
   elements.metricRequired.textContent = `${completed.length}/${required.length}`;
   elements.metricRuns.textContent = String(runs.length);
   elements.metricStreak.textContent = String(state.data?.streak?.days_without_miss || 0);
@@ -327,7 +335,8 @@ function activityDescription(activity) {
   const pieces = [
     target.distance_miles ? `${target.distance_miles} mi` : null,
     target.distance_km ? `${target.distance_km} km` : null,
-    target.duration_minutes ? `${target.duration_minutes} min` : null,
+    (target.estimated_duration_minutes || target.duration_minutes) ? `About ${target.estimated_duration_minutes || target.duration_minutes} min` : null,
+    target.time_budget_minutes ? `${target.time_budget_minutes} min available` : null,
     target.intensity,
     target.notes || activity.notes
   ].filter(Boolean);
@@ -620,7 +629,10 @@ function clearExerciseDraft(activityId, exerciseId) {
 function feedbackSignature(payload) {
   return JSON.stringify({
     difficulty: payload.difficulty ?? "",
-    back_pain: payload.back_pain ?? ""
+    back_pain: payload.back_pain ?? "",
+    notes: payload.notes ?? "",
+    actual_duration_minutes: payload.actual_duration_minutes ?? "",
+    timing_status: payload.timing_status ?? "unknown"
   });
 }
 
@@ -916,6 +928,8 @@ function attachFeedbackAutosave(form, activity) {
     try {
       await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false });
       lastSaved = signature;
+      const fresh = activities().find(a => a.activity_id === activity.activity_id);
+      if (fresh) renderCoachingDetails(fresh, form.closest("article"));
       setAutosaveStatus(status, "Saved", "is-saved");
     } catch {
       setAutosaveStatus(status, "Not saved", "is-error");
@@ -934,7 +948,7 @@ function attachFeedbackAutosave(form, activity) {
 
   activeAutosaveFlushers.add(flushNow);
 
-  ["difficulty", "back_pain"].forEach((field) => {
+  ["difficulty", "back_pain", "notes", "actual_duration_minutes", "timing_status"].forEach((field) => {
     const input = form.elements[field];
     if (!input) return;
     input.addEventListener("input", () => scheduleAutosave());
@@ -1133,6 +1147,37 @@ function renderActivityActuals(activity) {
   return block.children.length ? block : null;
 }
 
+function renderCoachingDetails(activity, node) {
+  node.querySelector(".coaching-details")?.remove();
+  const panel = document.createElement("div");
+  panel.className = "coaching-details";
+  function line(text, warning = false) {
+    const p = document.createElement("p");
+    p.textContent = text;
+    if (warning) p.className = "coaching-warning";
+    panel.append(p);
+  }
+  for (const block of activity.blocks || []) {
+    const primary = activity.subtasks.find(s => s.subtask_id === block.primary_subtask_id)?.title;
+    const rest = activity.subtasks.find(s => s.subtask_id === block.active_rest_subtask_id)?.title;
+    line(`${block.rounds} rounds · alternate individual sets`);
+    line(`${primary} → active rest: ${rest} → next work set`);
+    line(`${block.active_rest_between_rounds_only ? block.rounds - 1 : block.rounds} active-rest bouts${block.additional_rest_seconds ? ` · ${block.additional_rest_seconds}s additional rest` : " · extra rest as needed"}`);
+  }
+  (activity.preference_issues || []).forEach(issue => line(`Preference needs review: ${issue}`, true));
+  for (const r of activity.preference_applications || []) {
+    if (!activity.preference_issues?.length) line(r.exception_reason ? `Preference exception: ${r.exception_reason}` : "Uses your between-set active-rest preference");
+  }
+  const timing = activity.timing;
+  if (timing?.actual_minutes) {
+    line(`${timing.estimated_minutes ? `Estimated ${timing.estimated_minutes} / actual` : "Actual"} ${timing.actual_minutes} min${timing.error_minutes !== null ? ` · estimate ${Math.abs(timing.error_minutes)} min ${timing.error_minutes >= 0 ? "over" : "under"}` : ""}`);
+    line(timing.eligible ? "Confirmed session · used for comparable workout timing" : `Timing history only: ${timing.reason}`);
+  }
+  const suggestion = state.data?.coaching_brief?.duration_suggestions?.find(s => s.activity_id === activity.activity_id);
+  if (suggestion?.sample_count >= 3) line(`Personal timing: about ${suggestion.estimated_minutes} min (${suggestion.range_minutes.join("–")} min across ${suggestion.sample_count} comparable sessions).`);
+  if (panel.childNodes.length) node.querySelector(".activity-main").after(panel);
+}
+
 function renderActivity(activity, options = {}) {
   const node = elements.activityTemplate.content.firstElementChild.cloneNode(true);
   const activityMain = node.querySelector(".activity-main");
@@ -1212,6 +1257,7 @@ function renderActivity(activity, options = {}) {
   } else {
     renderExerciseLogs(activity, exerciseLogList);
   }
+  renderCoachingDetails(activity, node);
   const actualsBlock = renderActivityActuals(activity);
   if (actualsBlock) activityMain.after(actualsBlock);
 
@@ -1245,7 +1291,7 @@ function renderActivity(activity, options = {}) {
   }
 
   const feedback = activity.feedback || {};
-  ["difficulty", "back_pain"].forEach((field) => {
+  ["difficulty", "back_pain", "notes", "actual_duration_minutes", "timing_status"].forEach((field) => {
     const input = form.elements[field];
     if (input) input.value = field === "difficulty" ? (feedback.difficulty ?? feedback.rpe ?? "") : (feedback[field] ?? "");
   });
@@ -2194,6 +2240,90 @@ function renderPlanningPeriods() {
   });
 }
 
+function resetCoachMemoryForm() {
+  elements.coachMemoryForm.reset();
+  elements.coachMemoryId.value = "";
+  elements.coachMemoryKind.value = "preference";
+  elements.coachMemoryCategory.value = "planning";
+  elements.coachMemoryCancel.hidden = true;
+  elements.coachMemoryKey.disabled = false;
+}
+
+function editCoachMemory(memory) {
+  elements.coachMemoryId.value = memory.memory_id;
+  elements.coachMemoryKey.value = memory.key;
+  elements.coachMemoryKind.value = memory.kind;
+  elements.coachMemoryCategory.value = memory.category;
+  elements.coachMemoryText.value = memory.text;
+  elements.coachMemoryForm.dataset.version = memory.version || 1;
+  document.querySelector("#coach-memory-rule").value = memory.rule?.sequence || "";
+  document.querySelector("#coach-memory-from").value = memory.effective_from || "";
+  document.querySelector("#coach-memory-expires").value = memory.expires_at || "";
+  elements.coachMemoryKey.disabled = true;
+  elements.coachMemoryCancel.hidden = false;
+  elements.coachMemoryText.focus();
+}
+
+async function removeCoachMemory(memory) {
+  if (!window.confirm(`Forget “${memory.text}”?`)) return;
+  try {
+    const response = await api(`/api/coach-memories/${encodeURIComponent(memory.memory_id)}`, { method: "DELETE" });
+    state.data.coach_memories = response.coach_memories;
+    renderCoachMemories();
+    await refreshCoachSummary();
+    setMessage("Memory removed.");
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+}
+
+function renderCoachMemories() {
+  const memories = state.data?.coach_memories || [];
+  elements.coachMemoriesList.innerHTML = "";
+  if (!memories.length) {
+    elements.coachMemoriesList.innerHTML = `<div class="empty-state">No structured memories yet. Ask GPT to remember a durable coaching preference, fact, or constraint.</div>`;
+    return;
+  }
+  memories.forEach((memory) => {
+    const card = document.createElement("article");
+    card.className = "coach-memory-card";
+    const copy = document.createElement("div");
+    const meta = document.createElement("p");
+    meta.className = "activity-meta";
+    const expired = memory.expires_at && memory.expires_at < todayKey();
+    meta.textContent = `${memory.kind} · ${memory.category} · version ${memory.version || 1}${expired ? " · expired" : ""}${memory.expires_at ? ` · through ${memory.expires_at}` : ""}`;
+    const text = document.createElement("p");
+    text.textContent = memory.text;
+    copy.append(meta, text);
+    if (memory.source_quote) {
+      const source = document.createElement("p");
+      source.className = "activity-meta";
+      source.textContent = `You said: “${memory.source_quote}”`;
+      copy.append(source);
+    }
+    if (memory.rule?.sequence === "alternate_sets") {
+      const rule = document.createElement("p");
+      rule.textContent = "Weekly plans must alternate individual sets or explain an exception.";
+      copy.append(rule);
+    }
+    const actions = document.createElement("div");
+    actions.className = "planning-period-card-actions";
+    const edit = document.createElement("button");
+    edit.className = "ghost-button";
+    edit.type = "button";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => editCoachMemory(memory));
+    const remove = document.createElement("button");
+    remove.className = "ghost-button";
+    remove.type = "button";
+    remove.textContent = "Forget";
+    remove.addEventListener("click", () => removeCoachMemory(memory));
+    actions.append(edit, remove);
+    card.append(copy, actions);
+    elements.coachMemoriesList.append(card);
+  });
+}
+
 function render() {
   activeAutosaveFlushers.clear();
   updateOverview();
@@ -2201,6 +2331,7 @@ function render() {
   renderWeek();
   renderLibrary();
   renderGoals();
+  renderCoachMemories();
   renderPlanningPeriods();
   renderGear();
   renderActuals();
@@ -2460,6 +2591,36 @@ elements.coachNotesForm.addEventListener("submit", async (event) => {
     setMessage(error.message, true);
   }
 });
+
+elements.coachMemoryForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const coachMemory = {
+      ...(elements.coachMemoryId.value ? { memory_id: elements.coachMemoryId.value } : {}),
+      key: elements.coachMemoryKey.value.trim(),
+      kind: elements.coachMemoryKind.value,
+      category: elements.coachMemoryCategory.value,
+      text: elements.coachMemoryText.value.trim(),
+      ...(elements.coachMemoryId.value ? { expected_version: Number(elements.coachMemoryForm.dataset.version) } : {}),
+      rule: document.querySelector("#coach-memory-rule").value ? { sequence: "alternate_sets" } : null,
+      effective_from: document.querySelector("#coach-memory-from").value || null,
+      expires_at: document.querySelector("#coach-memory-expires").value || null
+    };
+    const response = await api("/api/coach-memories/upsert", {
+      method: "POST",
+      body: JSON.stringify({ coach_memories: [coachMemory] })
+    });
+    state.data.coach_memories = response.coach_memories;
+    resetCoachMemoryForm();
+    renderCoachMemories();
+    await refreshCoachSummary();
+    setMessage("Memory saved.");
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+});
+
+elements.coachMemoryCancel.addEventListener("click", resetCoachMemoryForm);
 
 elements.actualsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
