@@ -1,3 +1,4 @@
+const learning = require("./coaching");
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -89,11 +90,84 @@ function arrayOfStrings(value) {
 const SUBTASK_LOG_MODES = new Set(["strength", "timed", "loaded-timed", "check"]);
 const PLANNING_PERIOD_REASONS = new Set(["vacation", "planned_deload", "other"]);
 const PLANNING_PERIOD_LOADS = new Set(["full_deload", "reduced", "normal"]);
+const COACH_MEMORY_KINDS = new Set(["preference", "fact", "constraint"]);
+const COACH_MEMORY_CATEGORIES = new Set(["planning", "exercise", "running", "recovery", "health", "equipment", "communication", "other"]);
 // Workout groups whose sessions are logged as a single activity-level entry and
 // therefore legitimately carry no movement subtasks. Everything else must break
 // the session out into loggable exercise rows.
 const NO_SUBTASK_ACTIVITY_GROUPS = new Set(["run", "weighted_vest", "other", "rest"]);
 const ATG_REFERENCE_NOTES = "Use this reference as the canonical ATG/back-health movement catalog. Every movement selected for a workout must still be materialized as its own subtask so it appears as a loggable exercise row; references never expand automatically.";
+
+function normalizeCoachMemory(memory = {}, index = 0, existing = null) {
+  const key = slugify(memory.key || existing?.key || memory.memory_id?.replace(/^memory-/, ""));
+  if (!key) throw new Error(`coach_memories[${index}].key is required`);
+  const kind = String(memory.kind || existing?.kind || "preference").toLowerCase();
+  if (!COACH_MEMORY_KINDS.has(kind)) {
+    throw new Error(`coach_memories[${index}].kind must be preference, fact, or constraint`);
+  }
+  const category = String(memory.category || existing?.category || "other").toLowerCase();
+  if (!COACH_MEMORY_CATEGORIES.has(category)) {
+    throw new Error(`coach_memories[${index}].category is not supported`);
+  }
+  const text = String(memory.text ?? memory.value ?? existing?.text ?? "").trim();
+  if (!text) throw new Error(`coach_memories[${index}].text is required`);
+  if (existing && memory.expected_version !== undefined && memory.expected_version !== (existing.version || 1)) throw new Error("Preference changed; read the latest version before editing");
+  const expiresAt = memory.expires_at === undefined ? existing?.expires_at || null : optionalDateKey(memory.expires_at, "expires_at");
+  const effectiveFrom = memory.effective_from === undefined ? existing?.effective_from || null : optionalDateKey(memory.effective_from, "effective_from");
+  if (expiresAt && effectiveFrom && expiresAt < effectiveFrom) throw new Error("expires_at must not precede effective_from");
+  const rule = memory.rule === undefined ? existing?.rule || null : memory.rule;
+  if (rule !== null && (typeof rule !== "object" || rule.sequence !== "alternate_sets")) throw new Error("Supported rule.sequence is alternate_sets; use null to clear it");
+  const sourceQuote = String(memory.source_quote ?? existing?.source_quote ?? "");
+  const sourceEvent = String(memory.source_event_id ?? existing?.source_event_id ?? "");
+  const changed = existing && (text !== existing.text || kind !== existing.kind || category !== existing.category || JSON.stringify(rule) !== JSON.stringify(existing.rule || null) || expiresAt !== (existing.expires_at || null) || effectiveFrom !== (existing.effective_from || null));
+  const timestamp = nowIso();
+  return {
+    version: existing ? (existing.version || 1) + (changed ? 1 : 0) : (memory.version || 1),
+    source_quote: sourceQuote,
+    source_event_id: sourceEvent,
+    expires_at: expiresAt,
+    effective_from: effectiveFrom,
+    rule,
+    history: changed ? [...(existing.history || []), { version: existing.version || 1, text: existing.text, rule: existing.rule || null, updated_at: existing.updated_at }].slice(-20) : (existing?.history || memory.history || []),
+    memory_id: String(memory.memory_id || existing?.memory_id || `memory-${key}`),
+    key,
+    kind,
+    category,
+    text,
+    created_at: existing?.created_at || memory.created_at || timestamp,
+    updated_at: existing ? (changed ? timestamp : existing.updated_at) : (memory.updated_at || timestamp)
+  };
+}
+
+function normalizeCoachMemories(memories) {
+  if (!Array.isArray(memories)) return [];
+  const byKey = new Map();
+  memories.forEach((memory, index) => {
+    const normalized = normalizeCoachMemory(memory, index);
+    byKey.set(normalized.key, normalized);
+  });
+  return Array.from(byKey.values()).sort((a, b) => a.category.localeCompare(b.category) || a.key.localeCompare(b.key));
+}
+
+function upsertCoachMemories(existing, incoming) {
+  const memories = normalizeCoachMemories(existing);
+  const byId = new Map(memories.map((memory) => [memory.memory_id, memory]));
+  const byKey = new Map(memories.map((memory) => [memory.key, memory]));
+  const saved = [];
+  incoming.forEach((memory, index) => {
+    const key = slugify(memory.key || memory.memory_id?.replace(/^memory-/, ""));
+    const current = (memory.memory_id && byId.get(String(memory.memory_id))) || (key && byKey.get(key)) || null;
+    const normalized = normalizeCoachMemory(memory, index, current);
+    if (current && current.memory_id !== normalized.memory_id) byId.delete(current.memory_id);
+    byId.set(normalized.memory_id, normalized);
+    byKey.set(normalized.key, normalized);
+    saved.push(normalized);
+  });
+  return {
+    saved,
+    coach_memories: Array.from(byId.values()).sort((a, b) => a.category.localeCompare(b.category) || a.key.localeCompare(b.key))
+  };
+}
 
 function normalizeRequiredOrOptional(activity) {
   // An explicit required_or_optional always wins; target.optional is only the
@@ -577,6 +651,7 @@ function createDefaultState(referenceDate = new Date()) {
     references: buildDefaultReferences(),
     planning_periods: [],
     coach_notes: "",
+    coach_memories: [],
     completions: {},
     feedback: {},
     exercise_logs: {},
@@ -638,6 +713,7 @@ function migrateStore(store) {
       Array.isArray(store.planning_periods) ? store.planning_periods : store.goals?.planning_periods
     ),
     coach_notes: typeof store.coach_notes === "string" ? store.coach_notes : "",
+    coach_memories: normalizeCoachMemories(store.coach_memories),
     health: {
       actual_workouts: Array.isArray(health.actual_workouts) ? health.actual_workouts.map(normalizeActualWorkout) : [],
       daily_metrics: Array.isArray(health.daily_metrics) ? health.daily_metrics : [],
@@ -724,6 +800,11 @@ function normalizeActivityForPlan(activity, index, defaultDate = null) {
     notes: activity.notes ? String(activity.notes) : undefined,
     subtasks: assertUniqueSubtaskIds(normalizeSubtasks(activityId, activity.subtasks), index)
   };
+  normalized.blocks = learning.normalizeBlocks({ ...normalized, blocks: activity.blocks });
+  normalized.preference_applications = Array.isArray(activity.preference_applications) ? activity.preference_applications.map(r => ({ key: String(r.key || ""), version: Number(r.version), exception_reason: String(r.exception_reason || "") })) : [];
+  for (const field of ["estimated_duration_minutes", "duration_minutes", "time_budget_minutes"]) {
+    if (normalized.target[field] !== undefined) normalized.target[field] = cleanOptionalNumber(normalized.target[field], 1, 1440, field);
+  }
   return normalized;
 }
 
@@ -918,7 +999,9 @@ function activityWithState(activity, store) {
     actual_match_candidates: actualMatchCandidates(activity, store),
     planning_periods: planningPeriods,
     excused_by_planning_period: excusedByPlanningPeriod,
-    feedback: store.feedback[activity.activity_id] || null
+    feedback: store.feedback[activity.activity_id] || null,
+    preference_issues: learning.preferenceIssues(activity, store),
+    timing: learning.timingObservation(activity, store, matchedActuals)
   };
 }
 
@@ -1861,8 +1944,10 @@ function createCoachSummary(store) {
 
   const summaryJson = {
     generated_at: nowIso(),
+    coaching_brief: coachingBrief(store),
     goals: store.goals,
     coach_notes: store.coach_notes || "",
+    coach_memories: store.coach_memories || [],
     planning_periods: store.planning_periods || [],
     planning_guidance: planningPeriodGuidance(store.planning_periods || []),
     streak: createStreak(store),
@@ -1888,9 +1973,15 @@ function createCoachSummary(store) {
 
   const lines = [
     `Coach summary for ${start} to ${end}`,
+    `Coaching guidance: ${coachingBrief(store).guidance.join(" ")}`,
+    `Timing guidance: ${coachingBrief(store).timing.guidance.join(" ")}`,
+    `Duration suggestions: ${JSON.stringify(coachingBrief(store).duration_suggestions)}`,
     "",
     `Primary goal: ${store.goals.primary || "Not set"}`,
     store.coach_notes ? `Coach notes: ${store.coach_notes}` : "Coach notes: none",
+    (store.coach_memories || []).length
+      ? `Memories & preferences: ${(store.coach_memories || []).map((memory) => `[${memory.kind}/${memory.category}] ${memory.text}`).join("; ")}`
+      : "Memories & preferences: none",
     (store.planning_periods || []).length
       ? `Planning periods: ${(store.planning_periods || []).map((period) => `${period.start_date} to ${period.end_date} ${period.title} (${period.reason}, ${period.training_load})`).join("; ")}`
       : "Planning periods: none",
@@ -2049,6 +2140,8 @@ const MCP_WRITE_TOOLS = new Set([
   "patch_goals",
   "update_run_plan",
   "update_coach_notes",
+  "upsert_coaching_memories",
+  "remove_coaching_memory",
   "mark_activity",
   "save_activity_feedback",
   "save_exercise_log",
@@ -2152,15 +2245,33 @@ function readJsonBody(req) {
   });
 }
 
+function coachingBrief(store) {
+  const timing = learning.timingContext(store, actualsForActivity);
+  return {
+    active_preferences: learning.activeMemories(store),
+    guidance: [
+      "Capture explicit durable preferences from daily conversation even without the word remember. Keep temporary symptoms as feedback or date-bounded constraints.",
+      "Latest structured preferences supersede conflicting legacy coach notes and plan wording. Honor current recovery constraints and explain session exceptions.",
+      "For alternate_sets rules, supply blocks and preference_applications with the current key/version on strength activities; each movement remains a separate loggable subtask.",
+      "Read the imported plan back to verify preferences and exercise sequences."
+    ],
+    timing,
+    duration_suggestions: (activePlan(store)?.activities || []).filter(a => /strength|lift/i.test(a.type)).map(a => ({ activity_id: a.activity_id, ...learning.estimateDuration(a, timing.observations) }))
+  };
+}
+
 function publicState(store) {
   const plan = activePlan(store);
   return {
     ...store,
+    review_environment: process.env.VERCEL_ENV === "preview",
+    coaching_brief: coachingBrief(store),
     streak: createStreak(store),
     gear: store.gear || [],
     exercise_glossary: store.exercise_glossary || [],
     references: store.references || [],
     coach_notes: store.coach_notes || "",
+    coach_memories: store.coach_memories || [],
     active_plan: plan ? {
       ...plan,
       activities: plan.activities.map((activity) => activityWithState(activity, store))
@@ -2292,8 +2403,10 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && pathname === "/api/planning-context") {
     if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, {
+      coaching_brief: coachingBrief(store),
       goals: store.goals,
       coach_notes: store.coach_notes || "",
+      coach_memories: store.coach_memories || [],
       planning_periods: store.planning_periods || [],
       planning_guidance: planningPeriodGuidance(store.planning_periods || []),
       gear: store.gear || [],
@@ -2306,6 +2419,41 @@ async function handleApi(req, res, pathname) {
         "Use gear.status to avoid unavailable or limited equipment when generating plans."
       ]
     });
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/api/coach-memories") {
+    if (!requireReadAuth(req, res)) return;
+    sendJson(res, 200, { coach_memories: store.coach_memories || [] });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/coach-memories/upsert") {
+    if (!requireWriteAuth(req, res)) return;
+    const body = await readJsonBody(req);
+    const rawMemories = Array.isArray(body) ? body : (body.coach_memories || [body.coach_memory || body]);
+    if (!Array.isArray(rawMemories) || !rawMemories.length) throw new Error("coach_memories must include at least one memory");
+    let saved = [];
+    const nextStore = await updateStore((current) => {
+      const result = upsertCoachMemories(current.coach_memories || [], rawMemories);
+      saved = result.saved;
+      return { ...current, coach_memories: result.coach_memories };
+    }, { action: "coach_memory.upsert", target: rawMemories.map((memory) => memory.memory_id || slugify(memory.key)).join(",") });
+    sendJson(res, 200, { saved, coach_memories: nextStore.coach_memories || [] });
+    return;
+  }
+
+  const coachMemoryMatch = pathname.match(/^\/api\/coach-memories\/([^/]+)$/);
+  if (req.method === "DELETE" && coachMemoryMatch) {
+    if (!requireWriteAuth(req, res)) return;
+    const memoryId = decodeURIComponent(coachMemoryMatch[1]);
+    const existing = (store.coach_memories || []).find((memory) => memory.memory_id === memoryId);
+    if (!existing) throw new Error("Coach memory not found");
+    const nextStore = await updateStore((current) => ({
+      ...current,
+      coach_memories: (current.coach_memories || []).filter((memory) => memory.memory_id !== memoryId)
+    }), { action: "coach_memory.delete", target: memoryId });
+    sendJson(res, 200, { deleted_memory_id: memoryId, coach_memories: nextStore.coach_memories || [] });
     return;
   }
 
@@ -2572,13 +2720,14 @@ async function handleApi(req, res, pathname) {
       // Only the incoming activities are checked; ones preserved from
       // existingPlan already belong to the week being written.
       assertActivityIdsUnclaimedByOtherPlans(incomingPlan.activities, current.plans, existingPlan);
+      learning.validatePreferences(incomingPlan.activities, current);
       const plan = mergePlanPreservingExisting(existingPlan, incomingPlan);
       const plans = [
         ...current.plans.filter((item) => item.plan_id !== plan.plan_id && item.week_start_date !== plan.week_start_date),
         plan
       ];
       const exercise_logs = clearBlankFallbackExerciseLogs(current.exercise_logs, plan);
-      return { ...current, plans, exercise_logs, active_plan_id: plan.plan_id };
+      return { ...current, plans, exercise_logs, duration_forecasts: learning.snapshotForecasts(current, incomingPlan.activities), active_plan_id: plan.plan_id };
     }, { action: "plan.import", target: incomingPlan.week_start_date });
     sendJson(res, 201, publicState(nextStore));
     return;
@@ -2636,6 +2785,7 @@ async function handleApi(req, res, pathname) {
       // validating against that stale plan would admit out-of-week dates.
       assertActivityDatesWithinWeek(normalizedActivities, currentPlan.week_start_date);
       assertActivityIdsUnclaimedByOtherPlans(normalizedActivities, current.plans, currentPlan);
+      learning.validatePreferences(normalizedActivities, current);
       const previousActivitiesForDate = currentPlan.activities.filter((activity) => activity.date === date);
       const removedActivityIds = previousActivitiesForDate
         .map((activity) => activity.activity_id)
@@ -2668,6 +2818,7 @@ async function handleApi(req, res, pathname) {
         plans,
         completions,
         feedback,
+        duration_forecasts: learning.snapshotForecasts(current, normalizedActivities),
         exercise_logs: clearBlankFallbackExerciseLogs(exercise_logs, updatedPlan),
         actual_links
       };
@@ -2716,20 +2867,26 @@ async function handleApi(req, res, pathname) {
     if (!requireWriteAuth(req, res)) return;
     const activityId = decodeURIComponent(feedbackMatch[1]);
     const body = await readJsonBody(req);
-    const feedback = {
-      ...(store.feedback[activityId] || {}),
-      difficulty: cleanNumber(body.difficulty ?? body.rpe, 1, 10, "difficulty"),
-      energy: cleanNumber(body.energy, 1, 5, "energy"),
-      soreness: cleanNumber(body.soreness, 1, 5, "soreness"),
-      back_pain: cleanNumber(body.back_pain, 0, 10, "back_pain"),
-      notes: body.notes ? String(body.notes) : "",
-      updated_at: nowIso()
-    };
-    Object.keys(feedback).forEach((key) => feedback[key] === undefined && delete feedback[key]);
-    const nextStore = await updateStore((current) => ({
-      ...current,
-      feedback: { ...current.feedback, [activityId]: { ...(current.feedback[activityId] || {}), ...feedback } }
-    }), { action: "activity.feedback.save", target: activityId });
+    const patch = { updated_at: nowIso() };
+    for (const [field, min, max] of [["difficulty", 1, 10], ["energy", 1, 5], ["soreness", 1, 5], ["back_pain", 0, 10], ["actual_duration_minutes", 1, 1440]]) {
+      const value = field === "difficulty" ? body.difficulty ?? body.rpe : body[field];
+      if (value !== undefined) patch[field] = cleanOptionalNumber(value, min, max, field);
+    }
+    if (body.notes !== undefined) patch.notes = String(body.notes);
+    if (body.timing_status !== undefined) {
+      if (!["", "unknown", "complete", "exclude"].includes(body.timing_status)) throw new Error("timing_status must be unknown, complete, or exclude");
+      patch.timing_status = body.timing_status || "unknown";
+    }
+    const nextStore = await updateStore((current) => {
+      if (!current.plans.some(p => p.activities.some(a => a.activity_id === activityId))) throw new Error("Activity not found");
+      const memories = body.coach_memories;
+      if (memories !== undefined && (!Array.isArray(memories) || !memories.length || memories.length > 20)) throw new Error("coach_memories must contain 1-20 explicit preferences");
+      const result = memories ? upsertCoachMemories(current.coach_memories || [], memories.map(m => ({ ...m, source_event_id: m.source_event_id || `feedback:${activityId}` }))) : null;
+      return { ...current,
+        ...(result ? { coach_memories: result.coach_memories } : {}),
+        feedback: { ...current.feedback, [activityId]: { ...(current.feedback[activityId] || {}), ...patch } }
+      };
+    }, { action: "activity.feedback.save", target: activityId });
     sendJson(res, 200, publicState(nextStore));
     return;
   }

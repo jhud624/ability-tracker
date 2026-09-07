@@ -148,12 +148,53 @@
               <button class="primary-button" type="submit">Save Goals</button>
             </form>
             <form class="tool-panel" id="coach-notes-form">
-              <label for="coach-notes">Coach notes</label>
+              <label for="coach-notes">Freeform coach notes</label>
               <textarea id="coach-notes" spellcheck="true"></textarea>
               <p class="field-help">
-                Use this for the notes you want ChatGPT to remember next time, instead of writing notes after every workout.
+                Legacy catch-all notes. Use structured memories below for preferences you want to update independently.
               </p>
               <button class="primary-button" type="submit">Save Notes</button>
+            </form>
+          </div>
+          <div class="tool-panel coach-memories-panel">
+            <div class="planning-periods-heading">
+              <div>
+                <p class="eyebrow">GPT conversation memory</p>
+                <h3>Memories &amp; preferences</h3>
+              </div>
+              <p class="field-help">Tell your coach “I prefer…” or “I really like…” during a daily update. Explicit preferences can be saved for future plans. Review or correct what was remembered here.</p>
+            </div>
+            <div class="coach-memories-list" id="coach-memories-list"></div>
+            <form class="coach-memory-form" id="coach-memory-form">
+              <input id="coach-memory-id" type="hidden" />
+              <label>Key<input id="coach-memory-key" type="text" placeholder="run-prescription-style" required /></label>
+              <label>Kind
+                <select id="coach-memory-kind">
+                  <option value="preference">Preference</option>
+                  <option value="fact">Fact</option>
+                  <option value="constraint">Constraint</option>
+                </select>
+              </label>
+              <label>Category
+                <select id="coach-memory-category">
+                  <option value="planning">Planning</option>
+                  <option value="exercise">Exercise</option>
+                  <option value="running">Running</option>
+                  <option value="recovery">Recovery</option>
+                  <option value="health">Health</option>
+                  <option value="equipment">Equipment</option>
+                  <option value="communication">Communication</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Apply to strength sessions<select id="coach-memory-rule"><option value="">General preference</option><option value="alternate_sets">Active rest between individual sets</option></select></label>
+              <label>Effective from<input id="coach-memory-from" type="date" /></label>
+              <label>Expires after<input id="coach-memory-expires" type="date" /></label>
+              <label class="coach-memory-text">Memory<textarea id="coach-memory-text" placeholder="Prefer run prescriptions by distance, not time." required></textarea></label>
+              <div class="planning-period-actions">
+                <button class="primary-button" type="submit">Save Memory</button>
+                <button class="ghost-button" id="coach-memory-cancel" type="button" hidden>Cancel edit</button>
+              </div>
             </form>
           </div>
           <div class="tool-panel planning-periods-panel">
@@ -323,6 +364,9 @@
         <form class="feedback-grid">
           <label title="Difficulty: 1 is very easy, 10 is maximal effort.">Difficulty<input name="difficulty" type="number" min="1" max="10" inputmode="numeric" /></label>
           <label>Back<input name="back_pain" type="number" min="0" max="10" inputmode="numeric" /></label>
+          <label>Actual minutes<input name="actual_duration_minutes" type="number" min="1" max="1440" step="0.1" placeholder="Use watch duration" /></label>
+          <label>Timing record<select name="timing_status"><option value="unknown">Not confirmed</option><option value="complete">Full session as prescribed</option><option value="exclude">Partial, interrupted, or changed</option></select></label>
+          <label class="feedback-notes">Coaching notes<textarea name="notes" placeholder="What worked? What should change? Tell your coach which preferences to carry forward."></textarea></label>
           <button class="ghost-button" type="submit">Save</button>
         </form>
       </article>

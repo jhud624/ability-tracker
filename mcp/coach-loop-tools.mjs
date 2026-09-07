@@ -26,6 +26,8 @@ const weeklyActivitySchema = z.object({
   target: looseObject.optional(),
   equipment: z.array(z.string()).optional(),
   references: z.array(z.string()).optional(),
+  blocks: z.array(z.object({ block_id: z.string(), mode: z.literal("alternating_sets"), rounds: z.number().int().min(2).max(20), primary_subtask_id: z.string(), active_rest_subtask_id: z.string(), active_rest_between_rounds_only: z.boolean().optional(), additional_rest_seconds: z.number().min(0).max(600).optional() })).optional(),
+  preference_applications: z.array(z.object({ key: z.string(), version: z.number().int().positive(), exception_reason: z.string().optional() })).optional(),
   subtasks: z.array(weeklySubtaskSchema)
 }).passthrough();
 const weeklyPlanSchema = z.object({
@@ -56,6 +58,19 @@ const planningPeriodSchema = z.object({
   reason: z.enum(["vacation", "planned_deload", "other"]),
   training_load: z.enum(["full_deload", "reduced", "normal"]),
   notes: z.string().optional()
+}).passthrough();
+const coachMemorySchema = z.object({
+  memory_id: z.string().min(1).optional().describe("Existing stable ID from get_coaching_memories. Include it when editing a known memory."),
+  key: z.string().min(1).describe("Short stable semantic key, such as run-prescription-style or avoid-weighted-vest. Reuse the same key to update instead of duplicating."),
+  kind: z.enum(["preference", "fact", "constraint"]),
+  category: z.enum(["planning", "exercise", "running", "recovery", "health", "equipment", "communication", "other"]),
+  text: z.string().min(1).describe("Concise durable statement written so a future coach can apply it without the original conversation."),
+  expected_version: z.number().int().positive().optional(),
+  source_quote: z.string().optional(),
+  source_event_id: z.string().optional(),
+  effective_from: z.string().nullable().optional(),
+  expires_at: z.string().nullable().optional(),
+  rule: z.object({ sequence: z.literal("alternate_sets") }).nullable().optional()
 }).passthrough();
 
 function dateKeyFromDate(date) {
@@ -371,7 +386,7 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "get_planning_context",
     {
       title: "Get planning context",
-      description: "Read goals, vacation/deload periods, gear inventory, active plan, streak, and notes needed to generate constraint-aware workouts."
+      description: "Read the authoritative coaching_brief, versioned active preferences, timing observations and duration suggestions, goals, constraints, gear and current plan. Read this before daily or weekly planning. Apply current preference versions through structured blocks and preference_applications; keep time budgets separate from forecasts."
     },
     async () => asText(await request("/api/planning-context"))
   );
@@ -653,6 +668,59 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
   );
 
   registerTool(
+    "get_coaching_memories",
+    {
+      title: "Get coaching memories and preferences",
+      description: "Read the user's durable Coach Loop preferences, facts, and constraints with stable IDs and keys. Use this before changing or forgetting an existing memory, or when the user asks what Coach Loop remembers.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false
+      }
+    },
+    async () => asText(await request("/api/coach-memories"))
+  );
+
+  registerTool(
+    "upsert_coaching_memories",
+    {
+      title: "Remember coaching preferences or facts",
+      description: "Add or update durable Coach Loop memory. Use for explicit preferences including I like, I prefer, or this works better, even without remember. Read existing memories first; use expected_version for corrections. Retain source_quote and source_event_id. Use rule: {sequence: alternate_sets} for between-set active-rest preferences. Temporary exceptions need effective_from/expires_at and must not become permanent rules. Persist only durable coaching context, not a temporary one-workout request. Reuse a stable key (and memory_id when known) so updates replace the intended item without overwriting unrelated memories.",
+      inputSchema: {
+        coach_memories: z.array(coachMemorySchema).min(1).max(20)
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ coach_memories }) => asText(await request("/api/coach-memories/upsert", {
+      method: "POST",
+      body: JSON.stringify({ coach_memories })
+    }))
+  );
+
+  registerTool(
+    "remove_coaching_memory",
+    {
+      title: "Forget one coaching memory",
+      description: "Delete one durable Coach Loop memory by its stable memory_id. Use only when the user explicitly asks to forget or remove it; call get_coaching_memories first if the ID is not already known.",
+      inputSchema: {
+        memory_id: z.string().min(1)
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        openWorldHint: false
+      }
+    },
+    async ({ memory_id }) => asText(await request(`/api/coach-memories/${encodeURIComponent(memory_id)}`, {
+      method: "DELETE"
+    }))
+  );
+
+  registerTool(
     "mark_activity",
     {
       title: "Mark activity",
@@ -674,14 +742,17 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "save_activity_feedback",
     {
       title: "Save activity feedback",
-      description: "Save quick subjective workout feedback. Difficulty and back pain are the main UI fields; energy, soreness, and notes are still accepted for compatibility.",
+      description: "Save daily feedback and explicit durable preferences atomically using coach_memories. Read existing memories before correcting them. Save actual_duration_minutes when reported. Set timing_status complete only when the user confirms the full prescribed session; use exclude for partial, interrupted, or materially changed work. Do not infer full completion from a watch record.",
       inputSchema: {
         activity_id: z.string(),
         difficulty: z.number().min(1).max(10).optional(),
         energy: z.number().min(1).max(5).optional(),
         soreness: z.number().min(1).max(5).optional(),
         back_pain: z.number().min(0).max(10).optional(),
-        notes: z.string().optional()
+        notes: z.string().optional(),
+        actual_duration_minutes: z.number().positive().nullable().optional(),
+        timing_status: z.enum(["unknown", "complete", "exclude"]).optional(),
+        coach_memories: z.array(coachMemorySchema).min(1).max(20).optional()
       }
     },
     async ({ activity_id, ...feedback }) => asText(await request(`/api/activities/${encodeURIComponent(activity_id)}/feedback`, {
