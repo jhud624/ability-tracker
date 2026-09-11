@@ -652,6 +652,7 @@ function createExerciseNumberField(exercise, name, labelText, options = {}) {
   input.min = "0";
   input.step = options.step || "1";
   input.inputMode = options.inputMode || "numeric";
+  input.autocomplete = "off";
   if (options.placeholder) input.placeholder = options.placeholder;
   input.setAttribute("aria-label", options.ariaLabel);
   input.value = options.value ?? "";
@@ -720,6 +721,7 @@ function createExerciseLogControls(activity, exercise, log = {}) {
   timeInput.min = "0";
   timeInput.step = "0.5";
   timeInput.inputMode = "decimal";
+  timeInput.autocomplete = "off";
   timeInput.setAttribute("aria-label", `Time for ${selectedTitle}`);
   const timeUnit = document.createElement("select");
   timeUnit.name = "duration_unit";
