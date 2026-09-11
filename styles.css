@@ -1032,6 +1032,9 @@ label {
 
 input, select, textarea {
   width: 100%;
+  /* Keep focused controls readable even when iOS uses a wider layout viewport.
+     Inheriting the compact label font can trigger keyboard focus zoom/panning. */
+  font-size: 16px;
   border: 1px solid var(--line);
   border-radius: 2px;
   background: var(--raised);
@@ -1048,7 +1051,6 @@ textarea {
   padding: 14px;
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 13px;
   line-height: 1.45;
 }
 
@@ -1479,12 +1481,6 @@ code {
   .feedback-grid button,
   .feedback-grid .autosave-status {
     grid-column: 1 / -1;
-  }
-
-  input:not([type="checkbox"]),
-  select,
-  textarea {
-    font-size: 16px;
   }
 }
 
@@ -1981,8 +1977,9 @@ input, select, textarea { min-width: 0; max-width: 100%; }
 
 /* ---------- Tighter phone spacing ---------- */
 @media (max-width: 620px) {
-  input:not([type="checkbox"]), select, textarea { font-size: 16px; }
   .exercise-entry-row, .exercise-log-row { padding: 9px; gap: 7px 9px; }
+  .exercise-entry-row label, .exercise-log-row label { min-width: 0; max-width: 100%; }
+  .exercise-swap-label { flex-basis: 100%; }
   .activity-card { padding: 12px; }
   .activity-list { gap: 8px; }
   .subtask-list, .exercise-log-list { gap: 7px; margin-top: 10px; }
