@@ -140,3 +140,49 @@ function estimateDuration(activity, observations) {
 }
 
 module.exports = { activeMemories, normalizeBlocks, preferenceIssues, validatePreferences, prescriptionKey, snapshotForecasts, timingObservation, timingContext, estimateDuration };
+
+function normalizeDecisionReview(review) {
+  if (review == null) return null;
+  if (typeof review !== 'object' || Array.isArray(review)) throw new Error('coaching_review must be an object');
+  const applications = review.memory_applications || [];
+  if (!Array.isArray(applications)) throw new Error('memory_applications must be an array');
+  const keys = new Set();
+  return {
+    memory_applications: applications.map(r => {
+      if (!r.key || keys.has(r.key) || !Number.isInteger(r.version) || r.version < 1) throw new Error('Each memory application needs a unique key and positive version');
+      keys.add(r.key);
+      if (!String(r.application || r.exception_reason || '').trim()) throw new Error('Explain how each memory was applied or why it was not');
+      return { key: String(r.key), version: r.version, application: String(r.application || ''), exception_reason: String(r.exception_reason || '') };
+    }),
+    run_plan_review: String(review.run_plan_review || '').trim()
+  };
+}
+
+function validateDecisionVersions(plan, store) {
+  for (const r of plan.coaching_review?.memory_applications || []) {
+    const memory = (store.coach_memories || []).find(m => m.key === r.key);
+    if (!memory || (memory.version || 1) !== r.version) throw new Error(`${r.key}: coaching decision changed; read current planning context before importing`);
+  }
+}
+
+function decisionReview(store, plan) {
+  const dates = (plan?.activities || []).map(a => a.date);
+  const memories = (store.coach_memories || []).filter(m => dates.length
+    ? dates.some(d => (!m.effective_from || m.effective_from <= d) && (!m.expires_at || m.expires_at >= d))
+    : activeMemories(store).includes(m));
+  const applications = plan?.coaching_review?.memory_applications || [];
+  return {
+    plan_id: plan?.plan_id || null,
+    memories: memories.map(m => {
+      const receipt = applications.find(a => a.key === m.key && a.version === (m.version || 1));
+      return { key: m.key, version: m.version || 1, text: m.text, source_quote: m.source_quote,
+        updated_at: m.updated_at, status: receipt ? (receipt.exception_reason ? 'exception' : 'applied') : 'needs_review',
+        explanation: receipt?.exception_reason || receipt?.application || 'No current weekly application recorded' };
+    }),
+    run_plan_review: plan?.coaching_review?.run_plan_review || null,
+    legacy_notes_present: Boolean(store.coach_notes?.trim()),
+    guidance: 'Applied means the coach recorded an application, not automatic proof of workout compliance. Review legacy notes too; do not silently promote observations to permanent preferences.'
+  };
+}
+
+Object.assign(module.exports, { normalizeDecisionReview, validateDecisionVersions, decisionReview });

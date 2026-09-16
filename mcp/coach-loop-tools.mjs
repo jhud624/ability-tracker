@@ -34,7 +34,11 @@ const weeklyPlanSchema = z.object({
   plan_id: z.string().min(1).optional(),
   week_start_date: z.string(),
   goals: z.array(z.string().min(1)).min(1),
-  activities: z.array(weeklyActivitySchema).min(1)
+  activities: z.array(weeklyActivitySchema).min(1),
+  coaching_review: z.object({
+    memory_applications: z.array(z.object({ key: z.string(), version: z.number().int().positive(), application: z.string().optional(), exception_reason: z.string().optional() })),
+    run_plan_review: z.string().describe("Explain weekly run changes and their effect on the peak target; name unresolved conflicts.")
+  }).optional()
 }).passthrough();
 const exerciseGlossaryEntrySchema = z.object({
   glossary_id: z.string().min(1).optional(),
@@ -72,181 +76,6 @@ const coachMemorySchema = z.object({
   expires_at: z.string().nullable().optional(),
   rule: z.object({ sequence: z.literal("alternate_sets") }).nullable().optional()
 }).passthrough();
-
-function dateKeyFromDate(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
-function addDays(dateKey, days) {
-  const date = new Date(`${dateKey}T12:00:00`);
-  date.setDate(date.getDate() + days);
-  return dateKeyFromDate(date);
-}
-
-function todayKey() {
-  return dateKeyFromDate(new Date());
-}
-
-function dateDaysApart(start, end) {
-  const startDate = new Date(`${start}T12:00:00`);
-  const endDate = new Date(`${end}T12:00:00`);
-  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 0;
-  return Math.round((endDate - startDate) / 86400000);
-}
-
-function weekKeyForDate(date) {
-  const value = new Date(`${date}T12:00:00`);
-  const day = value.getDay();
-  value.setDate(value.getDate() - ((day + 6) % 7));
-  return dateKeyFromDate(value);
-}
-
-function planningAdjustmentForWeek(state, weekStart, targetRuns) {
-  const weekEnd = addDays(weekStart, 6);
-  const periods = (state.planning_periods || state.goals?.planning_periods || [])
-    .filter((period) => period.start_date <= weekEnd && period.end_date >= weekStart);
-  let fullDeloadDays = 0;
-  let reducedDays = 0;
-  for (let offset = 0; offset < 7; offset += 1) {
-    const date = addDays(weekStart, offset);
-    if (periods.some((period) => period.training_load === "full_deload" && period.start_date <= date && period.end_date >= date)) {
-      fullDeloadDays += 1;
-    } else if (periods.some((period) => period.training_load === "reduced" && period.start_date <= date && period.end_date >= date)) {
-      reducedDays += 1;
-    }
-  }
-  const volumeFactor = Math.max(0, (7 - fullDeloadDays - (reducedDays * 0.5)) / 7);
-  const adjustedRuns = periods.length ? Math.max(0, Math.round(targetRuns * volumeFactor)) : targetRuns;
-  return {
-    periods,
-    fullDeloadDays,
-    reducedDays,
-    volumeFactor,
-    targetRuns: adjustedRuns,
-    trainingLoad: fullDeloadDays ? "full_deload_overlap" : reducedDays ? "reduced" : "normal"
-  };
-}
-
-function roundDistance(value) {
-  return Math.round(Number(value || 0) * 10) / 10;
-}
-
-function monthFromGoalText(text) {
-  const months = [
-    "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december"
-  ];
-  const lower = String(text || "").toLowerCase();
-  const index = months.findIndex((month) => lower.includes(month));
-  return index >= 0 ? index : null;
-}
-
-function raceTargetFromGoals(goals = {}) {
-  const explicit = String(goals.race_date || goals.target_race_date || "").slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(explicit)) return { date: explicit, inferred: false };
-  const goalText = [goals.primary, ...(Array.isArray(goals.goals) ? goals.goals : [])].filter(Boolean).join(" ");
-  const iso = goalText.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
-  if (iso) return { date: iso[1], inferred: true };
-  const month = monthFromGoalText(goalText);
-  if (month !== null) {
-    const now = new Date(`${todayKey()}T12:00:00`);
-    const year = month < now.getMonth() ? now.getFullYear() + 1 : now.getFullYear();
-    return { date: dateKeyFromDate(new Date(year, month + 1, 0)), inferred: true };
-  }
-  return { date: addDays(todayKey(), 16 * 7), inferred: true };
-}
-
-function runDistancesForWeek(longRunDistance, runCount, raceWeek = false, targetDistance = 13.1) {
-  const count = Math.max(1, Number(runCount || 3));
-  if (raceWeek) {
-    const tuneups = count <= 2 ? [3] : [3, 2];
-    return [...tuneups.slice(0, Math.max(0, count - 1)), targetDistance].slice(-count);
-  }
-  if (count === 1) return [roundDistance(longRunDistance)];
-  const easy = Math.max(2, longRunDistance * 0.6);
-  if (count === 2) return [roundDistance(easy), roundDistance(longRunDistance)];
-  const quality = Math.max(2.5, longRunDistance * 0.72);
-  const extras = Array.from({ length: Math.max(0, count - 3) }, () => Math.max(2.5, longRunDistance * 0.5));
-  return [easy, quality, ...extras, longRunDistance].map(roundDistance);
-}
-
-function buildRunPlanFromState(state = {}) {
-  const goals = state.goals || {};
-  const runPlan = goals.run_plan || {};
-  const runs = (state.health?.actual_workouts || []).filter((actual) => String(actual.type || actual.name || "").toLowerCase().includes("run"));
-  const race = raceTargetFromGoals(goals);
-  const targetDistance = Number(runPlan.race_distance_miles || goals.race_distance_miles || 13.1);
-  const targetRuns = Math.max(1, Number(runPlan.weekly_runs || goals.run_frequency_per_week || 3));
-  const currentWeekStart = weekKeyForDate(todayKey());
-  const raceWeekStart = weekKeyForDate(race.date);
-  const longestActual = Math.max(0, ...runs.map((run) => Number(run.distance_miles || 0)));
-  const plannedRunDistances = (state.active_plan?.activities || [])
-    .filter((activity) => activity.type === "run")
-    .map((activity) => Number(activity.target?.distance_miles || 0))
-    .filter(Boolean);
-  const plannedLong = Math.max(0, ...plannedRunDistances);
-  const startLong = Number(runPlan.start_long_run_miles || Math.max(3, Math.min(6, longestActual || plannedLong || 3)));
-  const peakLong = Number(runPlan.peak_long_run_miles || Math.max(10, targetDistance - 1.1));
-  const cutbackEveryWeeks = Math.max(3, Number(runPlan.cutback_every_weeks || 4));
-  const totalWeeks = Math.max(1, Math.floor(dateDaysApart(currentWeekStart, raceWeekStart) / 7) + 1);
-  const peakIndex = Math.max(0, totalWeeks - 3);
-  const weeks = [];
-  let weekStart = currentWeekStart;
-  let index = 0;
-  let postDeloadWeeks = 0;
-  while (weekStart <= raceWeekStart && weeks.length < 32) {
-    const weeksToRace = Math.max(0, Math.round(dateDaysApart(weekStart, raceWeekStart) / 7));
-    const isRaceWeek = weekStart === raceWeekStart;
-    let longRun = targetDistance;
-    if (!isRaceWeek && weeksToRace === 1) longRun = Math.max(6, peakLong * 0.65);
-    else if (!isRaceWeek && weeksToRace === 2) longRun = peakLong;
-    else if (!isRaceWeek) {
-      const progress = peakIndex ? Math.min(1, index / peakIndex) : 1;
-      longRun = startLong + (peakLong - startLong) * progress;
-      if (index > 0 && index % cutbackEveryWeeks === cutbackEveryWeeks - 1) longRun *= 0.86;
-    }
-    const planning = planningAdjustmentForWeek(state, weekStart, targetRuns);
-    if (planning.fullDeloadDays) postDeloadWeeks = 2;
-    else if (postDeloadWeeks > 0) {
-      planning.volumeFactor *= postDeloadWeeks === 2 ? 0.75 : 0.9;
-      planning.targetRuns = Math.max(1, Math.round(targetRuns * planning.volumeFactor));
-      planning.trainingLoad = "post_deload_return";
-      postDeloadWeeks -= 1;
-    }
-    longRun = planning.targetRuns ? roundDistance(longRun * planning.volumeFactor) : 0;
-    const distances = planning.targetRuns ? runDistancesForWeek(longRun, planning.targetRuns, isRaceWeek, targetDistance) : [];
-    const actualRuns = runs.filter((run) => run.date >= weekStart && run.date <= addDays(weekStart, 6));
-    weeks.push({
-      week_start: weekStart,
-      week_end: addDays(weekStart, 6),
-      target_runs: planning.targetRuns,
-      planned_distances_miles: distances,
-      target_weekly_miles: roundDistance(distances.reduce((sum, distance) => sum + distance, 0)),
-      target_long_run_miles: longRun,
-      training_load: planning.trainingLoad,
-      full_deload_days: planning.fullDeloadDays,
-      reduced_training_days: planning.reducedDays,
-      planning_periods: planning.periods,
-      actual_runs: actualRuns.length,
-      actual_miles: roundDistance(actualRuns.reduce((sum, run) => sum + Number(run.distance_miles || 0), 0)),
-      weeks_to_race: weeksToRace,
-      is_race_week: isRaceWeek
-    });
-    weekStart = addDays(weekStart, 7);
-    index += 1;
-  }
-  return {
-    race,
-    assumptions: {
-      weekly_runs: targetRuns,
-      race_distance_miles: targetDistance,
-      start_long_run_miles: startLong,
-      peak_long_run_miles: peakLong,
-      cutback_every_weeks: cutbackEveryWeeks
-    },
-    weeks
-  };
-}
 
 function compactActual(actual = {}) {
   const {
@@ -350,6 +179,24 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     return payload;
   }
 
+  async function verifiedPlanWrite(path, options) {
+    const saved = await request(path, options);
+    try {
+      const current = await request("/api/plans/current");
+      const prescription = p => p && ({ plan_id: p.plan_id, week_start_date: p.week_start_date, goals: p.goals,
+        coaching_review: p.coaching_review,
+        activities: (p.activities || []).map(a => ({ activity_id: a.activity_id, date: a.date, title: a.title, type: a.type,
+          required_or_optional: a.required_or_optional, target: a.target, subtasks: a.subtasks, blocks: a.blocks,
+          preference_applications: a.preference_applications, equipment: a.equipment, references: a.references })) });
+      const verified = Boolean(saved.active_plan) && JSON.stringify(prescription(saved.active_plan)) === JSON.stringify(prescription(current));
+      return asText({ ...saved, receipt: { status: verified ? "verified" : "changed_after_save", verified_at: new Date().toISOString(),
+        instruction: verified ? "Plan saved and read back. Report applied decisions and unresolved run-plan conflicts." : "Write completed but the plan changed. Read current plan before any retry." } });
+    } catch (error) {
+      return asText({ ...saved, receipt: { status: "saved_verification_pending", error: error.message,
+        instruction: "Write completed; verify current plan before retrying. Do not tell the user the save failed." } });
+    }
+  }
+
   const server = new McpServer({
     name: "coach-loop",
     version: "0.1.0"
@@ -435,14 +282,7 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
       title: "Get long-term run plan",
       description: "Read the generated half-marathon run plan from the current goals, race timing, run-plan assumptions, and imported run actuals."
     },
-    async () => {
-      const state = await request("/api/state");
-      return asText({
-        goals: state.goals,
-        planning_periods: state.planning_periods || [],
-        run_plan: buildRunPlanFromState(state)
-      });
-    }
+    async () => asText(await request("/api/run-plan"))
   );
 
   registerTool(
@@ -526,15 +366,15 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "import_weekly_plan",
     {
       title: "Import weekly plan",
-      description: "Import and activate a complete ChatGPT-generated weekly plan JSON object. Every activity needs movement-level subtasks except runs, weighted-vest work, rest, and other general activity, which log at the activity level and take an empty subtasks array. References are source catalogs and never expand into exercise rows. For an existing week, included dates are merged and untouched dates are preserved.",
+      description: "Import and activate a complete ChatGPT-generated weekly plan JSON object. Every activity needs movement-level subtasks except runs, weighted-vest work, rest, and other general activity, which log at the activity level and take an empty subtasks array. References are source catalogs and never expand into exercise rows. For an existing week, included dates are merged and untouched dates are preserved. Read planning context first. Include coaching_review describing each current memory version applied or excepted, and reconcile run changes with the peak target. Report the returned receipt and unresolved conflicts.",
       inputSchema: {
         plan: weeklyPlanSchema.describe("Weekly plan JSON with week_start_date, goals, and activities. Each activity needs date, title, type, and subtasks; IDs, targets, equipment, and references are optional and filled in server-side.")
       }
     },
-    async ({ plan }) => asText(await request("/api/plans/import", {
+    async ({ plan }) => verifiedPlanWrite("/api/plans/import", {
       method: "POST",
       body: JSON.stringify(plan)
-    }))
+    })
   );
 
   registerTool(
@@ -549,10 +389,10 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
         })).describe("Complete activities for this date; date may be omitted because the tool applies the requested date. Reuse an activity_id only to keep an existing activity's logs; omit it for new activities.")
       }
     },
-    async ({ date, activities }) => asText(await request(`/api/plans/current/days/${encodeURIComponent(date)}`, {
+    async ({ date, activities }) => verifiedPlanWrite(`/api/plans/current/days/${encodeURIComponent(date)}`, {
       method: "PUT",
       body: JSON.stringify({ activities })
-    }))
+    })
   );
 
   registerTool(
@@ -695,10 +535,16 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
         openWorldHint: false
       }
     },
-    async ({ coach_memories }) => asText(await request("/api/coach-memories/upsert", {
-      method: "POST",
-      body: JSON.stringify({ coach_memories })
-    }))
+    async ({ coach_memories }) => {
+      const saved = await request("/api/coach-memories/upsert", { method: "POST", body: JSON.stringify({ coach_memories }) });
+      try {
+        const current = await request("/api/coach-memories");
+        const verified = saved.saved.every(m => current.coach_memories.some(c => c.memory_id === m.memory_id && JSON.stringify(c) === JSON.stringify(m)));
+        return asText({ ...saved, receipt: { status: verified ? "verified" : "changed_after_save", verified_at: new Date().toISOString(), instruction: verified ? "Saved and read back. Tell the user which memories changed." : "Write completed but read-back differs. Read current memory before any retry." } });
+      } catch (error) {
+        return asText({ ...saved, receipt: { status: "saved_verification_pending", instruction: "Write completed. Do not repeat it blindly; read memory to verify.", error: error.message } });
+      }
+    }
   );
 
   registerTool(

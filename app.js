@@ -267,18 +267,19 @@ async function api(path, options = {}) {
     }
   }
   if (!response.ok) throw new Error(payload.error || "Request failed");
+  if (isWrite) state.storageWarning = (payload.storage_warnings || []).join(" ");
   return payload;
 }
 
 function setMessage(message, isError = false) {
-  elements.message.textContent = message;
+  elements.message.textContent = [message, state.storageWarning].filter(Boolean).join(" ");
   elements.message.classList.toggle("is-error", isError);
   if (message) {
     window.clearTimeout(setMessage.timer);
     setMessage.timer = window.setTimeout(() => {
       elements.message.textContent = "";
       elements.message.classList.remove("is-error");
-    }, 4500);
+    }, state.storageWarning ? 15000 : 4500);
   }
 }
 
@@ -1853,89 +1854,19 @@ function runDistancesForWeek(longRunDistance, runCount, raceWeek = false, target
   return [easy, quality, ...extras, longRunDistance].map(roundDistance);
 }
 
-function buildHalfMarathonRunPlan(runs) {
-  const goals = state.data?.goals || {};
-  const runPlan = goals.run_plan || {};
-  const race = raceTargetFromGoals(goals);
-  const targetDistance = Number(runPlan.race_distance_miles || goals.race_distance_miles || 13.1);
-  const targetRuns = Math.max(1, Number(runPlan.weekly_runs || goals.run_frequency_per_week || 3));
-  const currentWeekStart = weekKeyForDate(todayKey());
-  const raceWeekStart = weekKeyForDate(race.date);
-  const longestActual = Math.max(0, ...runs.map((run) => Number(run.distance_miles || 0)));
-  const plannedRunDistances = activities()
-    .filter((activity) => activity.type === "run")
-    .map((activity) => Number(activity.target?.distance_miles || 0))
-    .filter(Boolean);
-  const plannedLong = Math.max(0, ...plannedRunDistances);
-  const startLong = Number(runPlan.start_long_run_miles || Math.max(3, Math.min(6, longestActual || plannedLong || 3)));
-  const peakLong = Number(runPlan.peak_long_run_miles || Math.max(10, targetDistance - 1.1));
-  const cutbackEveryWeeks = Math.max(3, Number(runPlan.cutback_every_weeks || 4));
-  const weeks = [];
-  let weekStart = currentWeekStart;
-  let index = 0;
-  let postDeloadWeeks = 0;
-  const totalWeeks = Math.max(1, Math.floor(dateDaysApart(currentWeekStart, raceWeekStart) / 7) + 1);
-  const peakIndex = Math.max(0, totalWeeks - 3);
-
-  while (weekStart <= raceWeekStart && weeks.length < 32) {
-    const weeksToRace = Math.max(0, Math.round(dateDaysApart(weekStart, raceWeekStart) / 7));
-    const isRaceWeek = weekStart === raceWeekStart;
-    let longRun;
-    if (isRaceWeek) {
-      longRun = targetDistance;
-    } else if (weeksToRace === 1) {
-      longRun = Math.max(6, peakLong * 0.65);
-    } else if (weeksToRace === 2) {
-      longRun = peakLong;
-    } else {
-      const progress = peakIndex ? Math.min(1, index / peakIndex) : 1;
-      longRun = startLong + (peakLong - startLong) * progress;
-      if (index > 0 && index % cutbackEveryWeeks === cutbackEveryWeeks - 1) longRun *= 0.86;
-    }
-    const planning = planningAdjustmentForWeek(weekStart, targetRuns);
-    if (planning.fullDeloadDays) postDeloadWeeks = 2;
-    else if (postDeloadWeeks > 0) {
-      planning.volumeFactor *= postDeloadWeeks === 2 ? 0.75 : 0.9;
-      planning.targetRuns = Math.max(1, Math.round(targetRuns * planning.volumeFactor));
-      planning.trainingLoad = "post_deload_return";
-      postDeloadWeeks -= 1;
-    }
-    longRun = planning.targetRuns ? roundDistance(longRun * planning.volumeFactor) : 0;
-    const distances = planning.targetRuns ? runDistancesForWeek(longRun, planning.targetRuns, isRaceWeek, targetDistance) : [];
-    const weeklyDistance = roundDistance(distances.reduce((sum, distance) => sum + distance, 0));
-    weeks.push({
-      weekStart,
-      weekEnd: addDays(weekStart, 6),
-      index,
-      targetRuns: planning.targetRuns,
-      distances,
-      longRun,
-      weeklyDistance,
-      weeksToRace,
-      isRaceWeek,
-      trainingLoad: planning.trainingLoad,
-      fullDeloadDays: planning.fullDeloadDays,
-      reducedTrainingDays: planning.reducedDays,
-      planningPeriods: planning.periods
-    });
-    weekStart = addDays(weekStart, 7);
-    index += 1;
-  }
-
-  return {
-    race,
-    targetRuns,
-    targetDistance,
-    assumptions: {
-      weekly_runs: targetRuns,
-      race_distance_miles: targetDistance,
-      start_long_run_miles: startLong,
-      peak_long_run_miles: peakLong,
-      cutback_every_weeks: cutbackEveryWeeks
-    },
-    currentWeek: weeks[0] || null,
-    weeks
-  };
+function buildHalfMarathonRunPlan() {
+  const saved = state.data?.run_plan;
+  const weeks = (saved?.weeks || []).map((w, index) => ({
+    weekStart: w.week_start, weekEnd: w.week_end, index, targetRuns: w.target_runs,
+    distances: w.planned_distances_miles, longRun: w.target_long_run_miles,
+    weeklyDistance: w.target_weekly_miles, weeksToRace: w.weeks_to_race,
+    isRaceWeek: w.is_race_week, trainingLoad: w.training_load, status: w.status
+  }));
+  return { race: { ...(saved?.race || {}), label: saved?.race?.date ? formatDate(saved.race.date) : "Not set" },
+    targetRuns: saved?.assumptions?.weekly_runs || 0,
+    targetDistance: saved?.assumptions?.race_distance_miles || 13.1,
+    assumptions: saved?.assumptions || {}, conflicts: saved?.conflicts || [],
+    weeks, currentWeek: weeks[0] || null };
 }
 
 function runWeekSummary(runs, weekStart) {
@@ -1970,7 +1901,7 @@ function runPlanStatus(runs) {
   let tone = "neutral";
   let detail = plan.currentWeek?.trainingLoad === "full_deload_overlap"
     ? "This week overlaps a planned full deload; required running is reduced to the available non-deload dates."
-    : `Generated plan targets ${targetRuns} runs and ${compactNumber(plannedDistance, 1)} mi this week.`;
+    : `Run plan targets ${targetRuns} runs and ${compactNumber(plannedDistance, 1)} mi this week.`;
   if (targetRuns === 0) {
     label = "Planned deload";
     tone = "good";
@@ -1993,6 +1924,11 @@ function runPlanStatus(runs) {
     }
   }
 
+  if (plan.conflicts.length) {
+    label = "Plan needs review";
+    tone = "watch";
+    detail = "Saved weekly workouts and the longer-term goal need reconciliation. See the review notes below.";
+  }
   return {
     label,
     tone,
@@ -2066,10 +2002,10 @@ function renderRunPlanTable(plan, runs) {
     const row = document.createElement("div");
     row.className = `run-table-row run-plan-row${index === 0 ? " is-current" : ""}${week.isRaceWeek ? " is-race-week" : ""}`;
     row.innerHTML = `
-      <span data-label="Week">${escapeHtml(formatDate(week.weekStart))}${week.isRaceWeek ? " · race" : ""}${week.trainingLoad !== "normal" ? ` · ${escapeHtml(week.trainingLoad.replaceAll("_", " "))}` : ""}</span>
+      <span data-label="Week">${escapeHtml(formatDate(week.weekStart))}${week.isRaceWeek ? " · race" : ""} · ${escapeHtml(week.status.replaceAll("_", " "))}${week.trainingLoad !== "normal" ? ` · ${escapeHtml(week.trainingLoad.replaceAll("_", " "))}` : ""}</span>
       <span data-label="Runs">${escapeHtml(String(week.targetRuns))}</span>
-      <span data-label="Distances">${escapeHtml(week.distances.map((distance) => `${distance} mi`).join(" / "))}</span>
-      <span data-label="Total">${escapeHtml(`${compactNumber(week.weeklyDistance, 1)} mi`)}</span>
+      <span data-label="Distances">${week.status === "needs_review" ? "Awaiting coaching review" : escapeHtml(week.distances.map((distance) => `${distance} mi`).join(" / "))}</span>
+      <span data-label="Total">${week.weeklyDistance === null ? "—" : escapeHtml(`${compactNumber(week.weeklyDistance, 1)} mi`)}</span>
       <span data-label="Actual">${escapeHtml(actual.runs.length ? `${actual.runs.length} runs · ${compactNumber(actual.distance, 1)} mi` : "-")}</span>
     `;
     table.append(row);
@@ -2119,7 +2055,8 @@ function renderRunTracking() {
   planHeading.className = "run-subsection-heading";
   planHeading.innerHTML = `
     <h3>Week-by-week run plan</h3>
-    <p>${escapeHtml(status.plan.targetRuns)} runs/week ramp toward the half marathon, with every fourth week eased back.</p>
+    <p>Saved weeks match your workouts. Future weeks are provisional projections, subject to recovery and coaching review.</p>
+    ${status.plan.conflicts.map(message => `<p class="run-plan-note">Review needed: ${escapeHtml(message)}</p>`).join("")}
   `;
 
   elements.runDashboard.append(statusPanel, metricGrid, planHeading, renderRunPlanTable(status.plan, runs));
@@ -2282,6 +2219,14 @@ async function removeCoachMemory(memory) {
 function renderCoachMemories() {
   const memories = state.data?.coach_memories || [];
   elements.coachMemoriesList.innerHTML = "";
+  const review = state.data?.coaching_brief?.decision_review;
+  if (review?.memories?.length) {
+    const summary = document.createElement("p");
+    summary.className = "run-plan-note";
+    const pending = review.memories.filter(m => m.status === "needs_review").length;
+    summary.textContent = pending ? `${pending} saved coaching decisions need review in this week's plan.` : "This week's coach has recorded how each saved decision was handled.";
+    elements.coachMemoriesList.append(summary);
+  }
   if (!memories.length) {
     elements.coachMemoriesList.innerHTML = `<div class="empty-state">No structured memories yet. Ask GPT to remember a durable coaching preference, fact, or constraint.</div>`;
     return;
@@ -2297,6 +2242,13 @@ function renderCoachMemories() {
     const text = document.createElement("p");
     text.textContent = memory.text;
     copy.append(meta, text);
+    const decision = review?.memories?.find(m => m.key === memory.key);
+    if (decision) {
+      const application = document.createElement("p");
+      application.className = "activity-meta";
+      application.textContent = `Weekly plan: ${decision.status.replaceAll("_", " ")} — ${decision.explanation}`;
+      copy.append(application);
+    }
     if (memory.source_quote) {
       const source = document.createElement("p");
       source.className = "activity-meta";

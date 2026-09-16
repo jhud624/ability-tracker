@@ -100,7 +100,7 @@ test("Coach Loop MCP can remember, update, and forget one preference without rep
 
   try {
     await client.connect(transport);
-    await client.callTool({
+    const memorySave = await client.callTool({
       name: "upsert_coaching_memories",
       arguments: {
         coach_memories: [
@@ -109,6 +109,7 @@ test("Coach Loop MCP can remember, update, and forget one preference without rep
         ]
       }
     });
+    assert.equal(JSON.parse(memorySave.content[0].text).receipt.status, "verified");
     await client.callTool({
       name: "upsert_coaching_memories",
       arguments: {
