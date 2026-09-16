@@ -200,13 +200,29 @@ async function withRedisLock(client, fn) {
       try {
         return await fn();
       } finally {
-        const current = await client.get(lockKey());
-        if (current === token) await client.del(lockKey());
+        try {
+          const current = await client.get(lockKey());
+          if (current === token) await client.del(lockKey());
+        } catch {
+          // The lock expires. Cleanup failure must not change the write outcome.
+          console.warn("Coach Loop lock cleanup failed; waiting for expiry.");
+        }
       }
     }
     await sleep(40 + attempt * 10);
   }
   throw new Error("Coach Loop store is busy. Retry in a moment.");
+}
+
+async function backupAfterWrite(next) {
+  try {
+    await createStoreBackup(next, "auto-write");
+    return next;
+  } catch {
+    console.warn("Coach Loop data saved, but automatic backup failed.");
+    // Response-only warning; do not turn a committed write into a retryable failure.
+    return { ...next, storage_warnings: ["Primary data saved; automatic backup failed. Check backup storage before relying on this revision for recovery."] };
+  }
 }
 
 async function updateStoreData(createDefaultState, updater) {
@@ -217,8 +233,7 @@ async function updateStoreData(createDefaultState, updater) {
       const current = existing || createDefaultState();
       const next = await updater(current);
       await client.set(storeKey(), next);
-      await createStoreBackup(next, "auto-write");
-      return next;
+      return backupAfterWrite(next);
     });
   }
 
@@ -226,8 +241,7 @@ async function updateStoreData(createDefaultState, updater) {
     const current = await readStoreData(createDefaultState);
     const next = await updater(current);
     await writeStoreData(next);
-    await createStoreBackup(next, "auto-write");
-    return next;
+    return backupAfterWrite(next);
   };
   fileWriteQueue = fileWriteQueue.then(run, run);
   return fileWriteQueue;

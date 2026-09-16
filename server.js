@@ -1,3 +1,4 @@
+const { buildRunPlanFromState } = require("./run-plan");
 const learning = require("./coaching");
 const http = require("node:http");
 const fs = require("node:fs");
@@ -128,7 +129,7 @@ function normalizeCoachMemory(memory = {}, index = 0, existing = null) {
     expires_at: expiresAt,
     effective_from: effectiveFrom,
     rule,
-    history: changed ? [...(existing.history || []), { version: existing.version || 1, text: existing.text, rule: existing.rule || null, updated_at: existing.updated_at }].slice(-20) : (existing?.history || memory.history || []),
+    history: changed ? [...(existing.history || []), { version: existing.version || 1, text: existing.text, kind: existing.kind, category: existing.category, rule: existing.rule || null, effective_from: existing.effective_from || null, expires_at: existing.expires_at || null, source_quote: existing.source_quote || "", source_event_id: existing.source_event_id || "", updated_at: existing.updated_at }].slice(-20) : (existing?.history || memory.history || []),
     memory_id: String(memory.memory_id || existing?.memory_id || `memory-${key}`),
     key,
     kind,
@@ -898,6 +899,7 @@ function validatePlan(input) {
   assertUniqueActivityIds(activities);
 
   return {
+    coaching_review: learning.normalizeDecisionReview(plan.coaching_review),
     plan_id: normalizedPlanId,
     week_start_date: plan.week_start_date,
     goals: plan.goals.map(String).map((goal) => goal.trim()).filter(Boolean),
@@ -1944,6 +1946,7 @@ function createCoachSummary(store) {
 
   const summaryJson = {
     generated_at: nowIso(),
+    run_plan: buildRunPlanFromState({ ...store, active_plan: activePlan(store) }),
     coaching_brief: coachingBrief(store),
     goals: store.goals,
     coach_notes: store.coach_notes || "",
@@ -2249,11 +2252,14 @@ function coachingBrief(store) {
   const timing = learning.timingContext(store, actualsForActivity);
   return {
     active_preferences: learning.activeMemories(store),
+    decision_review: learning.decisionReview(store, activePlan(store)),
     guidance: [
       "Capture explicit durable preferences from daily conversation even without the word remember. Keep temporary symptoms as feedback or date-bounded constraints.",
       "Latest structured preferences supersede conflicting legacy coach notes and plan wording. Honor current recovery constraints and explain session exceptions.",
       "For alternate_sets rules, supply blocks and preference_applications with the current key/version on strength activities; each movement remains a separate loggable subtask.",
-      "Read the imported plan back to verify preferences and exercise sequences."
+      "Read the imported plan back to verify preferences and exercise sequences.",
+      "Save explicit daily preferences through upsert_coaching_memories and verify the receipt. Keep one-workout requests on the activity, and temporary constraints date-bounded. If the tool is missing, report unsaved context explicitly.",
+      "For weekly planning include coaching_review.memory_applications with key, version and application or exception_reason for every applicable memory; include run_plan_review explaining deviations and their effect on the peak target. Never claim an unresolved conflict is reconciled."
     ],
     timing,
     duration_suggestions: (activePlan(store)?.activities || []).filter(a => /strength|lift/i.test(a.type)).map(a => ({ activity_id: a.activity_id, ...learning.estimateDuration(a, timing.observations) }))
@@ -2265,6 +2271,7 @@ function publicState(store) {
   return {
     ...store,
     review_environment: process.env.VERCEL_ENV === "preview",
+    run_plan: buildRunPlanFromState({ ...store, active_plan: activePlan(store) }),
     coaching_brief: coachingBrief(store),
     streak: createStreak(store),
     gear: store.gear || [],
@@ -2400,9 +2407,16 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  if (req.method === "GET" && pathname === "/api/run-plan") {
+    if (!requireReadAuth(req, res)) return;
+    sendJson(res, 200, { run_plan: buildRunPlanFromState({ ...store, active_plan: activePlan(store) }) });
+    return;
+  }
+
   if (req.method === "GET" && pathname === "/api/planning-context") {
     if (!requireReadAuth(req, res)) return;
     sendJson(res, 200, {
+      run_plan: buildRunPlanFromState({ ...store, active_plan: activePlan(store) }),
       coaching_brief: coachingBrief(store),
       goals: store.goals,
       coach_notes: store.coach_notes || "",
@@ -2439,7 +2453,7 @@ async function handleApi(req, res, pathname) {
       saved = result.saved;
       return { ...current, coach_memories: result.coach_memories };
     }, { action: "coach_memory.upsert", target: rawMemories.map((memory) => memory.memory_id || slugify(memory.key)).join(",") });
-    sendJson(res, 200, { saved, coach_memories: nextStore.coach_memories || [] });
+    sendJson(res, 200, { saved, coach_memories: nextStore.coach_memories || [], storage_warnings: nextStore.storage_warnings || [] });
     return;
   }
 
@@ -2721,6 +2735,7 @@ async function handleApi(req, res, pathname) {
       // existingPlan already belong to the week being written.
       assertActivityIdsUnclaimedByOtherPlans(incomingPlan.activities, current.plans, existingPlan);
       learning.validatePreferences(incomingPlan.activities, current);
+      learning.validateDecisionVersions(incomingPlan, current);
       const plan = mergePlanPreservingExisting(existingPlan, incomingPlan);
       const plans = [
         ...current.plans.filter((item) => item.plan_id !== plan.plan_id && item.week_start_date !== plan.week_start_date),
