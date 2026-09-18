@@ -1404,7 +1404,7 @@ function renderLibrary() {
   const items = uniqueWorkoutLibraryItems();
   elements.libraryGrid.innerHTML = "";
   if (!items.length) {
-    elements.libraryGrid.innerHTML = `<div class="empty-state">No workouts in the active plan yet. Import a plan to build the library.</div>`;
+    elements.libraryGrid.innerHTML = `<div class="empty-state">No workouts in the active plan yet. The back support reference above is always available.</div>`;
     return;
   }
 

@@ -630,6 +630,52 @@ h3 {
   box-shadow: none;
 }
 
+.back-support-reference {
+  margin-bottom: 24px;
+}
+
+.back-support-reference summary {
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.back-support-reference > summary > * {
+  display: block;
+}
+
+.back-support-reference > summary strong {
+  font-size: 1.25rem;
+}
+
+.back-support-reference p,
+.back-support-reference li {
+  line-height: 1.6;
+}
+
+.back-support-reference li + li {
+  margin-top: 12px;
+}
+
+.back-support-section {
+  padding: 16px 0;
+  border-top: 1px solid var(--line, #d8ded8);
+}
+
+.back-support-section > summary {
+  font-weight: 700;
+}
+
+.back-support-sources {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+}
+
+.back-support-reference summary:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 4px;
+}
+
 .library-card h3 {
   margin-bottom: 8px;
   font-size: 22px;
