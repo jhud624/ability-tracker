@@ -34,6 +34,9 @@ test("a public asset symlink cannot copy backend source into deployed output", a
 });
 
 test("Vercel uses generated output while retaining both serverless handlers and rewrites", async () => {
+  assert.deepEqual(PUBLIC_ASSETS, ["index.html", "client-sync.js", "app.js", "styles.css"]);
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  assert.ok(html.indexOf('src="client-sync.js"') < html.indexOf('src="app.js"'));
   const config = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(config.framework, null);
