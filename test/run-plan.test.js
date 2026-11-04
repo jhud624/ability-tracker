@@ -48,6 +48,9 @@ test('state, planning context, summary and run endpoint share the same plan; dec
   const { once } = require('node:events');
   const { startServer, createDefaultState } = require('../server');
   const old = process.env.COACH_LOOP_DATA_DIR;
+  const oldApiToken = process.env.COACH_LOOP_API_TOKEN;
+  const authHeaders = { authorization: 'Bearer synthetic-continuity-token' };
+  process.env.COACH_LOOP_API_TOKEN = 'synthetic-continuity-token';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'coach-continuity-test-'));
   process.env.COACH_LOOP_DATA_DIR=dir;
   const data = createDefaultState();
@@ -58,23 +61,24 @@ test('state, planning context, summary and run endpoint share the same plan; dec
   const base=`http://127.0.0.1:${server.address().port}`;
   try {
     const reviewed={...plan,coaching_review:{memory_applications:[{key:'warmup',version:1,application:'Included in run instructions'}],run_plan_review:'Recovery adjustment; peak target still needs review'}};
-    const write=await fetch(base+'/api/plans/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(reviewed)});
+    const write=await fetch(base+'/api/plans/import',{method:'POST',headers:{'content-type':'application/json',...authHeaders},body:JSON.stringify(reviewed)});
     assert.equal(write.status,201, write.status !== 201 ? await write.text() : "");
     const stored=await write.json();
     assert.deepEqual(stored.active_plan.coaching_review,normalizeDecisionReview(reviewed.coaching_review));
-    const [state,context,summary,run] = await Promise.all(['/api/state','/api/planning-context','/api/coach-summary','/api/run-plan'].map(async url => (await fetch(base+url)).json()));
+    const [state,context,summary,run] = await Promise.all(['/api/state','/api/planning-context','/api/coach-summary','/api/run-plan'].map(async url => (await fetch(base+url,{headers:authHeaders})).json()));
     assert.deepEqual(state.run_plan,context.run_plan);
     assert.deepEqual(context.run_plan,summary.run_plan);
     assert.deepEqual(summary.run_plan,run.run_plan);
     assert.equal(context.coaching_brief.decision_review.memories[0].status,'applied');
     reviewed.coaching_review.memory_applications[0].version=99;
-    const stale=await fetch(base+'/api/plans/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(reviewed)});
+    const stale=await fetch(base+'/api/plans/import',{method:'POST',headers:{'content-type':'application/json',...authHeaders},body:JSON.stringify(reviewed)});
     assert.equal(stale.status,400);
-    const after=await (await fetch(base+'/api/plans/current')).json();
+    const after=await (await fetch(base+'/api/plans/current',{headers:authHeaders})).json();
     assert.equal(after.coaching_review.memory_applications[0].version,1);
   } finally {
     await new Promise(resolve=>server.close(resolve));
     if(old===undefined) delete process.env.COACH_LOOP_DATA_DIR; else process.env.COACH_LOOP_DATA_DIR=old;
+    if(oldApiToken===undefined) delete process.env.COACH_LOOP_API_TOKEN; else process.env.COACH_LOOP_API_TOKEN=oldApiToken;
     fs.rmSync(dir,{recursive:true,force:true});
   }
 });

@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+process.env.COACH_LOOP_ALLOW_UNAUTHENTICATED_LOCAL = "true";
 
 const {
   buildDefaultPlan,
@@ -23,6 +24,7 @@ function request(handler, { method = "GET", path = "/", body = null, headers = {
       }
     });
     req.method = method;
+    req.socket = { remoteAddress: "127.0.0.1" };
     req.url = path;
     if (preParsedBody) req.body = body || {};
     const resolvedHeaders = {
@@ -73,6 +75,7 @@ function requestWithDeferredBody({ method, path, body, headers = {}, release }) 
       }
     });
     req.method = method;
+    req.socket = { remoteAddress: "127.0.0.1" };
     req.url = path;
     req.headers = { host: "127.0.0.1", "content-type": "application/json", ...headers };
     const res = {

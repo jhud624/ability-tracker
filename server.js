@@ -1,9 +1,10 @@
 const { buildRunPlanFromState } = require("./run-plan");
 const learning = require("./coaching");
 const http = require("node:http");
-const fs = require("node:fs");
-const path = require("node:path");
 const crypto = require("node:crypto");
+const { allowUnauthenticatedLocal, hostedMcpConfigurationError, isLoopbackHost, secretsEqual } = require("./security");
+const { createStaticHandler } = require("./static-files");
+const { MCP_MAX_BODY_BYTES, McpInputError, readMcpBody } = require("./mcp-limits");
 const {
   createStoreBackup,
   listStoreBackups,
@@ -33,18 +34,6 @@ const {
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
 const BODY_LIMIT_BYTES = 2 * 1024 * 1024;
-
-const MIME_TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".ico": "image/x-icon"
-};
 
 function nowIso() {
   return new Date().toISOString();
@@ -2103,8 +2092,10 @@ function hasOwnerSession(req) {
 
 function isAuthorized(req) {
   const expected = cleanSecret(process.env.COACH_LOOP_API_TOKEN);
-  if (!expected) return true;
-  return bearerToken(req) === expected || hasOwnerSession(req);
+  const sessionConfigured = expected || cleanSecret(process.env.COACH_LOOP_OAUTH_SIGNING_SECRET);
+  if (secretsEqual(bearerToken(req), expected)) return true;
+  if (sessionConfigured && hasOwnerSession(req)) return true;
+  return allowUnauthenticatedLocal(req);
 }
 
 function requireWriteAuth(req, res) {
@@ -2121,8 +2112,7 @@ function requireReadAuth(req, res) {
 
 function isCronAuthorized(req) {
   const secret = cleanSecret(process.env.COACH_LOOP_CRON_SECRET || process.env.CRON_SECRET);
-  if (!secret) return true;
-  return bearerToken(req) === secret;
+  return secretsEqual(bearerToken(req), secret);
 }
 
 function originFor(req) {
@@ -2142,6 +2132,8 @@ const MCP_WRITE_TOOLS = new Set([
   "update_goals",
   "patch_goals",
   "update_run_plan",
+  "upsert_planning_periods",
+  "remove_planning_period",
   "update_coach_notes",
   "upsert_coaching_memories",
   "remove_coaching_memory",
@@ -2160,9 +2152,22 @@ function mcpRequiredScopes(body) {
 }
 
 async function handleMcpRequest(req, res) {
-  let parsedBody = req.body;
-  if (req.method === "POST" && parsedBody === undefined) {
-    parsedBody = await readJsonBody(req);
+  if (!authorizeMcpRequest(req, res)) return;
+  let parsedBody;
+  if (req.method === "POST") {
+    try {
+      parsedBody = await readMcpBody(req);
+    } catch (error) {
+      if (!(error instanceof McpInputError)) throw error;
+      sendJson(res, error.statusCode, {
+        jsonrpc: "2.0",
+        error: { code: error.statusCode === 413 ? -32000 : -32600, message: error.message },
+        id: null
+      }, { connection: "close" });
+      return;
+    }
+  } else {
+    parsedBody = req.body;
   }
 
   if (!authorizeMcpRequest(req, res, mcpRequiredScopes(parsedBody))) return;
@@ -2195,7 +2200,8 @@ async function handleMcpRequest(req, res) {
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
-      enableJsonResponse: true
+      enableJsonResponse: true,
+      maxRequestBodySize: MCP_MAX_BODY_BYTES
     });
     res.on("close", () => {
       transport.close();
@@ -2305,12 +2311,21 @@ function upsertById(existing, incoming, idField) {
 }
 
 async function handleApi(req, res, pathname) {
-  const store = await readStore();
+  const publicPath = ["/api/session", "/api/session/login", "/api/session/logout", "/api/healthz"].includes(pathname);
+  if (!publicPath) {
+    if (pathname === "/api/backups/create" && req.method === "GET") {
+      if (!isCronAuthorized(req)) {
+        sendError(res, 401, "Backup cron is not authorized");
+        return;
+      }
+    } else if (!requireReadAuth(req, res)) return;
+  }
+  const store = publicPath ? null : await readStore();
 
   if (req.method === "GET" && pathname === "/api/session") {
     sendJson(res, 200, {
       authenticated: isAuthorized(req),
-      auth_required: Boolean(cleanSecret(process.env.COACH_LOOP_API_TOKEN)),
+      auth_required: !allowUnauthenticatedLocal(req),
       method: hasOwnerSession(req) ? "owner_session" : null
     });
     return;
@@ -2394,7 +2409,7 @@ async function handleApi(req, res, pathname) {
     sendJson(res, 200, {
       ok: true,
       storage: storageMode(),
-      auth_required_for_writes: Boolean(cleanSecret(process.env.COACH_LOOP_API_TOKEN)),
+      auth_required_for_writes: !allowUnauthenticatedLocal(req),
       mcp_oauth_required: mcpOAuthRequired()
     });
     return;
@@ -2976,27 +2991,7 @@ async function handleApi(req, res, pathname) {
   sendError(res, 404, "API route not found");
 }
 
-function serveStatic(res, pathname) {
-  const relativePath = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
-  const requestedPath = path.normalize(path.join(ROOT, relativePath));
-  if (!requestedPath.startsWith(ROOT)) {
-    sendError(res, 403, "Forbidden");
-    return;
-  }
-  fs.readFile(requestedPath, (error, content) => {
-    if (error) {
-      if (!path.extname(requestedPath)) {
-        serveStatic(res, "/");
-        return;
-      }
-      sendError(res, 404, "File not found");
-      return;
-    }
-    const ext = path.extname(requestedPath).toLowerCase();
-    res.writeHead(200, { "content-type": MIME_TYPES[ext] || "application/octet-stream" });
-    res.end(content);
-  });
-}
+const serveStatic = createStaticHandler(ROOT);
 
 async function handleRequest(req, res) {
   try {
@@ -3007,6 +3002,11 @@ async function handleRequest(req, res) {
         "access-control-allow-headers": "content-type, authorization, mcp-session-id"
       });
       res.end();
+      return;
+    }
+    const createsSessionOrMcpConnection = ["/mcp", "/oauth/authorize", "/oauth/token", "/api/session", "/api/session/login"].includes(url.pathname);
+    if (createsSessionOrMcpConnection && hostedMcpConfigurationError()) {
+      sendJson(res, 503, { error: "Hosted MCP service configuration is incomplete" });
       return;
     }
     if (url.pathname === "/.well-known/oauth-protected-resource") {
@@ -3041,18 +3041,22 @@ async function handleRequest(req, res) {
       await handleMcpRequest(req, res);
       return;
     }
-    serveStatic(res, url.pathname);
+    await serveStatic(req, res, url.pathname);
   } catch (error) {
     sendError(res, 400, error.message || "Bad request");
   }
 }
 
 function startServer(port = PORT) {
+  const host = process.env.COACH_LOOP_HOST || "127.0.0.1";
+  if (process.env.COACH_LOOP_ALLOW_UNAUTHENTICATED_LOCAL === "true" && !isLoopbackHost(host)) {
+    throw new Error("Unauthenticated local mode requires a loopback host");
+  }
   const server = http.createServer(handleRequest);
-  server.listen(port, () => {
+  server.listen(port, host, () => {
     const address = server.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
-    console.log(`Coach Loop running at http://127.0.0.1:${actualPort}`);
+    console.log(`Coach Loop running at http://${host}:${actualPort}`);
   });
   return server;
 }

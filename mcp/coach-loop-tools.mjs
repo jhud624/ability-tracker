@@ -1,5 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import mcpLimits from "../mcp-limits.js";
+
+const { MCP_MAX_TOOL_INPUT_ELEMENTS } = mcpLimits;
 
 const looseObject = z.object({}).passthrough();
 const weeklySubtaskSchema = z.union([
@@ -200,7 +203,7 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
   const server = new McpServer({
     name: "coach-loop",
     version: "0.1.0"
-  });
+  }, { maxToolInputElements: MCP_MAX_TOOL_INPUT_ELEMENTS });
 
   registerTool(
     "get_state",
