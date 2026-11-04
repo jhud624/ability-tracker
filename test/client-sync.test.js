@@ -64,6 +64,15 @@ function browser(fetch) {
     sync: vm.runInContext("clientSync", context),
     run: code => vm.runInContext(code, context),
     expireToasts() { for (const cb of [...timers.values()]) cb(); timers.clear(); },
+    installBulkHandler() {
+      elements.completeWorkout = { addEventListener: (_, cb) => { listeners.bulk = cb; } };
+      context.todaysList = () => state.data?.active_plan?.activities || [];
+      context.todayKey = () => "2026-11-04";
+      vm.runInContext(part('elements.completeWorkout.addEventListener("click",', "\nelements.writeAccessButton"), context);
+    },
+    installExerciseAutosave() {
+      vm.runInContext(part("function exerciseLogSignature(", "\nfunction createExerciseNumberField") + part("function exerciseLogHasData(", "\nfunction attachFeedbackAutosave"), context);
+    },
     installActivityHandlers() {
       Object.assign(context, { activity: { activity_id: "synthetic" }, completed: false, options: {},
         checkButton: { dataset: {}, addEventListener: (_, cb) => { listeners.overall = cb; } },
@@ -641,4 +650,91 @@ test("browser: an observed normal restore also cancels suspended pre-restore act
   assert.equal(app.sync.state.pendingIntents, 1); assert.equal(app.sync.state.pendingCurrentIntents, 0);
   assert.equal(app.rendered.at(-1).revision, 2);
   flush.resolve(); await action; assert.equal(writes, 0);
+});
+
+
+const planSnapshot = (revision, ids, extra = {}) => snapshot(revision, { active_plan: { activities: ids.map(activity_id => ({ activity_id })) }, ...extra });
+
+test("actual bulk handler preserves its click guard through an initial autosave wait and normal restore; only a new click sends", async () => {
+  const flush = deferred(), sent = []; let result = planSnapshot(10, ["old-A", "old-B"]);
+  const app = browser(async (path, options = {}) => {
+    if (options.method === "PATCH") { sent.push(path); result = planSnapshot(3, ["new-A"], { restored_at: "2026-11-04T10:00:00.000Z" }); return response(result); }
+    return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" });
+  });
+  await app.run("loadState()"); app.installBulkHandler(); app.context.activeAutosaveFlushers.add(() => flush.promise);
+  const action = app.listeners.bulk(); await turn();
+  result = planSnapshot(2, ["new-A"], { restored_at: "2026-11-04T10:00:00.000Z" }); await app.run("loadState()");
+  flush.resolve(); await action; assert.deepEqual(sent, []);
+  assert.match(app.elements.message.textContent, /bulk completion edits were canceled/);
+  await app.listeners.bulk(); assert.deepEqual(sent, ["/api/activities/new-A"]);
+});
+
+test("actual bulk handler cannot remint captured old activities after anomaly and explicit resync during its initial wait", async () => {
+  const flush = deferred(), sent = []; let result = planSnapshot(2, ["old-A", "old-B"], { restored_at: "2026-11-04T10:00:00.000Z" });
+  const app = browser(async (path, options = {}) => { if (options.method === "PATCH") sent.push(path); return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" }); });
+  await app.run("loadState()"); app.installBulkHandler(); app.context.activeAutosaveFlushers.add(() => flush.promise);
+  const action = app.listeners.bulk(); await turn();
+  result = planSnapshot(11, ["new-A"]); await app.run("loadState()"); await app.run("loadState({resync:true})");
+  assert.equal(app.sync.state.recoveryRequired, false);
+  flush.resolve(); await action; assert.deepEqual(sent, []);
+  assert.equal(app.state.data.active_plan.activities[0].activity_id, "new-A");
+});
+
+for (const anomaly of [false, true]) test(`actual bulk handler cancels remaining captured activities when ${anomaly ? "anomaly/resync" : "normal restore"} occurs between loop iterations`, async () => {
+  const firstSummary = deferred(), entered = deferred(), sent = []; let held = false;
+  const oldGeneration = anomaly ? { restored_at: "2026-11-04T10:00:00.000Z" } : {};
+  let result = planSnapshot(10, ["old-A", "old-B"], oldGeneration);
+  const app = browser(async (path, options = {}) => {
+    if (options.method === "PATCH") { sent.push(path); result = planSnapshot(11, ["old-A", "old-B"], oldGeneration); return response(result); }
+    if (path === "/api/coach-summary" && sent.length === 1 && !held) { held = true; entered.resolve(); return firstSummary.promise; }
+    return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" });
+  });
+  await app.run("loadState()"); app.installBulkHandler();
+  const action = app.listeners.bulk(); await entered.promise;
+  result = anomaly ? planSnapshot(12, ["new-A"]) : planSnapshot(2, ["new-A"], { restored_at: "2026-11-04T11:00:00.000Z" });
+  await app.run("loadState()"); if (anomaly) await app.run("loadState({resync:true})");
+  firstSummary.resolve(response({ revision: 11, ...oldGeneration, summary_text: "old" })); await action;
+  assert.deepEqual(sent, ["/api/activities/old-A"], "already acknowledged first write stays saved; no remaining old activity is sent");
+  assert.equal(app.state.data.active_plan.activities[0].activity_id, "new-A");
+});
+
+test("actual exercise swap timer cannot rebuild an old control with a fresh guard after recovery/resync", async () => {
+  let result = snapshot(2, { restored_at: "2026-11-04T10:00:00.000Z" }), writes = 0, rebuilt = 0; const handlers = {};
+  const app = browser(async (path, options = {}) => { if (options.method) writes++; return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" }); });
+  await app.run("loadState()"); app.installExerciseAutosave();
+  app.context.row = { addEventListener() {}, querySelector: () => null, isConnected: true };
+  app.context.controls = { payload: () => ({ exercise_id: "A", reps: 1 }), status: {}, inputs: [], elements: [], updateTotal() {}, swap: { addEventListener: (name, fn) => { handlers[name] = fn; } } };
+  app.context.appendExerciseLogControls = () => { rebuilt++; return {status:{}}; };
+  app.run('attachExerciseLogAutosave(row, {activity_id:"old-A"}, {exercise_id:"A"}, controls)');
+  handlers.change();
+  result = snapshot(11); await app.run("loadState()"); await app.run("loadState({resync:true})");
+  app.expireToasts(); await turn();
+  assert.equal(rebuilt, 0); assert.equal(writes, 0);
+});
+
+
+test("persisted exercise draft shown after recovery is preserved but cannot be automatically reminted under a fresh control guard", async () => {
+  let result = snapshot(2, { restored_at: "2026-11-04T10:00:00.000Z" }), writes = 0, clears = 0;
+  const app = browser(async (path, options = {}) => { if (options.method) { writes++; result = snapshot(12); } return response(path === "/api/state" || options.method ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" }); });
+  await app.run("loadState()"); result = snapshot(11); await app.run("loadState()"); await app.run("loadState({resync:true})");
+  app.installExerciseAutosave();
+  const handlers = {}, payload = { exercise_id: "A", title: "Synthetic preserved draft", reps: 3 };
+  app.context.readExerciseDraft = () => ({ ...payload });
+  app.context.clearExerciseDraft = () => { clears++; };
+  app.context.row = { addEventListener:(name,fn)=>{handlers[name]=fn}, querySelector:()=>null, isConnected:true };
+  app.context.controls = {payload:()=>({...payload}),status:{},inputs:[],elements:[],updateTotal(){},swap:{addEventListener(){}}};
+  app.run('attachExerciseLogAutosave(row, {activity_id:"current-A"}, {exercise_id:"A"}, controls)');
+  await app.run("flushActiveAutosaves()"); await app.run("flushActiveAutosaves()");
+  assert.equal(writes, 0); assert.equal(clears, 0, "draft remains available for explicit review");
+  await handlers.submit({preventDefault(){}}); assert.equal(writes, 1); assert.equal(clears, 1);
+});
+
+test("a new deliberate field edit reviews a displayed exercise draft and permits one automatic save", async () => {
+  let writes = 0; const app = browser(async (path, options = {}) => { if (options.method) writes++; return response(options.method ? snapshot(2) : { revision:2,summary_text:"current" }); });
+  app.installExerciseAutosave(); const inputHandlers = {}, payload = { exercise_id:"A",reps:3 };
+  app.context.readExerciseDraft=()=>({...payload}); app.context.row={addEventListener(){},querySelector:()=>null,isConnected:true};
+  app.context.controls={payload:()=>({...payload}),status:{},inputs:[{addEventListener:(name,fn)=>{inputHandlers[name]=fn}}],elements:[],updateTotal(){},swap:{addEventListener(){}}};
+  app.run('attachExerciseLogAutosave(row, {activity_id:"current-A"}, {exercise_id:"A"}, controls)');
+  await app.run("flushActiveAutosaves()"); assert.equal(writes,0);
+  payload.reps=4; inputHandlers.input(); await app.run("flushActiveAutosaves()"); assert.equal(writes,1);
 });

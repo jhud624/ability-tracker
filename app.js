@@ -864,6 +864,9 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   const controlIntent = clientSync.captureIntent();
   let timer = null;
   const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
+  // A persisted draft has no trustworthy capture generation. Display/preserve
+  // it, but require a new edit or explicit Save before automatic submission.
+  let draftReviewed = !draft;
   const hasSavedLog = Object.keys(savedLog || {}).length > 0;
   // A newly rendered empty row has a title even when the user has not entered
   // anything. Use that pristine payload as the baseline so visibility/pagehide
@@ -908,7 +911,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   }
 
   async function flushAutosave({ explicit = false } = {}) {
-    if (!controlIntent.isCurrent()) return;
+    if (!controlIntent.isCurrent() || (!draftReviewed && !explicit)) return;
     const payload = controls.payload();
     const signature = exerciseLogSignature(payload);
     if (signature === lastSaved) return;
@@ -928,6 +931,8 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   }
 
   function saveDraftAndUpdate() {
+    if (!controlIntent.isCurrent()) return;
+    draftReviewed = true;
     writeExerciseDraft(activity.activity_id, controls.payload());
     controls.updateTotal();
   }
@@ -948,20 +953,23 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       saveDraftAndUpdate();
       scheduleAutosave();
     });
-    input.addEventListener("change", () => scheduleAutosave(0));
+    input.addEventListener("change", () => { saveDraftAndUpdate(); scheduleAutosave(0); });
     input.addEventListener("blur", () => scheduleAutosave(0));
   });
 
   controls.swap.addEventListener("change", () => {
+    if (!controlIntent.isCurrent()) return;
     // Swapping to an alternative movement can change which fields apply
     // (e.g. curl -> weighted carry), so rebuild this row's controls from the
     // draft before flushing — the flush clears the draft on success.
     saveDraftAndUpdate();
     window.setTimeout(async () => {
+      if (!controlIntent.isCurrent()) return;
       activeAutosaveFlushers.delete(flushNow);
       controls.elements.forEach((el) => el.remove());
       const rebuilt = appendExerciseLogControls(row, activity, exercise);
       await flushNow();
+      if (!controlIntent.isCurrent()) return;
       rebuilt.status.textContent = controls.status.textContent;
       rebuilt.status.className = controls.status.className;
     }, 0);
@@ -1113,7 +1121,7 @@ function renderExerciseLogs(activity, container) {
     row.append(title, ...controls.elements);
     container.append(row);
     controls.updateTotal();
-    if (draft) setAutosaveStatus(controls.status, "Draft", "is-saving");
+    if (draft) setAutosaveStatus(controls.status, "Draft; edit to save", "is-saving");
   });
 }
 
@@ -1128,7 +1136,7 @@ function appendExerciseLogControls(row, activity, exercise) {
   attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);
   row.append(...controls.elements);
   controls.updateTotal();
-  if (draft) setAutosaveStatus(controls.status, "Draft", "is-saving");
+  if (draft) setAutosaveStatus(controls.status, "Draft; edit to save", "is-saving");
   return controls;
 }
 
@@ -2378,7 +2386,7 @@ async function loadState({ resync = false } = {}) {
   await refreshCoachSummary();
 }
 
-async function updateActivity(activityId, payload) {
+async function updateActivity(activityId, payload, { intent = clientSync.captureIntent() } = {}) {
   const body = JSON.stringify(payload); // Capture each tap before any await.
   await clientSync.activityIntent(async (intent) => {
     if (!intent.isCurrent()) return;
@@ -2391,7 +2399,7 @@ async function updateActivity(activityId, payload) {
       // Reads may verify a lost acknowledgement. They never replay this write.
       await loadState();
     }
-  });
+  }, intent);
   render();
   await refreshCoachSummary();
 }
@@ -2479,14 +2487,22 @@ elements.tabButtons.forEach((button) => {
 elements.refreshButton.addEventListener("click", () => loadState({ resync: true }));
 
 elements.completeWorkout.addEventListener("click", async () => {
-  const pending = todaysList().filter((activity) => !activity.completion?.completed);
-  if (!pending.length) return;
+  const intent = clientSync.captureIntent(); // One click, one generation, across every wait.
+  const pendingIds = todaysList().filter((activity) => !activity.completion?.completed).map(activity => activity.activity_id);
+  const loggedDate = todayKey();
+  if (!pendingIds.length) return;
+  function current() {
+    if (intent.isCurrent()) return true;
+    setMessage("Remaining bulk completion edits were canceled after recovery. Review displayed state before making a new edit.");
+    return false;
+  }
+  if (!current()) return;
   await flushActiveAutosaves();
-  for (const activity of pending) {
-    await updateActivity(activity.activity_id, {
-      completed: true,
-      logged_date: todayKey()
-    });
+  if (!current()) return;
+  for (const activityId of pendingIds) {
+    if (!current()) return;
+    await updateActivity(activityId, { completed: true, logged_date: loggedDate }, { intent });
+    if (!current()) return;
   }
 });
 

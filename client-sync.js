@@ -192,8 +192,7 @@
       if (path === "/api/coach-summary") return read(path, transportOptions, "summary");
       return send(path, transportOptions);
     }
-    function activityIntent(run) {
-      const intent = recoveryGuard();
+    function activityIntent(run, intent = recoveryGuard()) {
       activityIntents.add(intent);
       epoch += 1;
       state.pendingIntents += 1;

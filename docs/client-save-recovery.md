@@ -74,7 +74,15 @@ send. Detached autosave controls/timers also retain their original token instead
 of silently recapturing old values after resync. Known unsent cancellation is not
 reported as an unknown write outcome. Rendering waits only for still-current
 activity intents, so the inspected recovery/resync snapshot can render while
-invalidated work is still unwinding. A new deliberate action uses a new token.
+invalidated work is still unwinding. A new deliberate action uses a new token. Bulk completion captures one guard,
+activity-ID list and logged date at the click, retains that guard through its
+initial autosave wait, and passes it through every activity wrapper. Recovery
+between activities cancels all remaining captured edits. Deferred exercise-swap
+rebuilds check their original control guard before creating replacement controls;
+they cannot mint a fresh token from a detached pre-recovery row. Persisted exercise
+drafts have no trustworthy capture generation: they stay visible and preserved,
+but a new field edit or explicit Save is required before automatic submission.
+Visibility/pagehide flushes alone cannot silently reauthorize them.
 
 Normal/background reads cannot clear the resync requirement. The user must use
 Refresh, which issues a READ with a local resync flag. It must confirm the same
