@@ -4,11 +4,13 @@
   else root.CoachClientSync = factory();
 })(globalThis, function () {
   function createClientSync({ send, onChange = () => {} }) {
-    const state = { data: null, summary: null, backupWarning: "", saveStatus: "", saveSequence: 0, writeError: "", refreshErrors: {}, pendingWrites: 0, pendingIntents: 0, receiptHead: null, needsReconcile: false, recoveryRequired: false, recoveryWarning: "" };
+    const state = { data: null, summary: null, backupWarning: "", saveStatus: "", saveSequence: 0, writeError: "", refreshErrors: {}, pendingWrites: 0, pendingIntents: 0, pendingCurrentIntents: 0, intentNotice: "", receiptHead: null, needsReconcile: false, recoveryRequired: false, recoveryWarning: "" };
     let writes = Promise.resolve();
     let intents = Promise.resolve();
     let epoch = 0;
     let version = 0;
+    let recoveryEpoch = 0;
+    const activityIntents = new Set();
     let head = null;
     const reads = new Map();
     const autosaves = new Map();
@@ -27,14 +29,38 @@
     }
     const matchesHead = (value) => head && revision(value) === head.revision && generation(value) === generation(head);
     function invalidateSummary() { version += 1; state.summary = null; }
+    function recoveryGuard() {
+      const captured = recoveryEpoch;
+      const blockedAtCapture = state.recoveryRequired;
+      const isCurrent = () => !blockedAtCapture && captured === recoveryEpoch && !state.recoveryRequired;
+      return { isCurrent, assertCurrent() {
+        if (isCurrent()) return;
+        const error = new Error("No save was sent: this edit was canceled by recovery. Review displayed state before making a new edit.");
+        error.notSent = true;
+        error.cancelledIntent = true;
+        throw error;
+      } };
+    }
+    function countCurrentIntents() {
+      state.pendingCurrentIntents = [...activityIntents].filter(intent => intent.isCurrent()).length;
+    }
+    function invalidateCapturedIntents(message) {
+      if (state.pendingCurrentIntents) state.intentNotice = message;
+      recoveryEpoch += 1; // Resync never revalidates an earlier captured intent.
+      countCurrentIntents();
+    }
     function recovery(message) {
       state.recoveryRequired = true;
+      invalidateCapturedIntents("Earlier pending edits were canceled by recovery. Review displayed state before making a new edit.");
       state.recoveryWarning = message + " Refresh saved state to explicitly resync before editing. Recovery still needs operator review.";
       invalidateSummary();
     }
     function applyState(value, partial = false, authoritative = false, resync = false) {
       const ordered = currentOrNewer(value);
       const confirmsRecovery = resync && state.recoveryRequired && matchesHead(value);
+      if (ordered && head && generation(value) !== generation(head)) {
+        invalidateCapturedIntents("Earlier pending edits were canceled after a restore. Review displayed state before making a new edit.");
+      }
       if (!ordered && !authoritative) {
         state.needsReconcile = true;
         recovery("The save was acknowledged but its revision/restore order is inconsistent; refresh to inspect the latest server snapshot.");
@@ -59,7 +85,7 @@
       invalidateSummary();
       return true;
     }
-    function write(path, options) {
+    function write(path, options, intent = recoveryGuard()) {
       epoch += 1; // Invalidate reads at enqueue time, before any network work.
       state.saveSequence += 1;
       state.pendingWrites += 1;
@@ -69,12 +95,13 @@
       emit();
       const operation = writes.then(async () => {
         try {
+          intent.assertCurrent();
           if (state.recoveryRequired) {
             const error = new Error("No save was sent: refresh saved state to resync after the recovery mismatch.");
             error.notSent = true;
             throw error;
           }
-          const value = await send(path, options);
+          const value = await send(path, options, intent);
           if (revision(value) === null) throw new Error("The save response was incomplete. Refresh saved state before trying again.");
           const fullState = value && Object.hasOwn(value, "active_plan");
           const accepted = applyState(value, !fullState);
@@ -134,7 +161,7 @@
       }
     }
     function request(path, options = {}) {
-      const { coalesce = false, autosaveKey, resync = false, ...transportOptions } = options;
+      const { coalesce = false, autosaveKey, resync = false, intent, ...transportOptions } = options;
       const method = String(options.method || "GET").toUpperCase();
       if (!["GET", "HEAD"].includes(method)) {
         if (state.recoveryRequired) {
@@ -149,7 +176,7 @@
         const key = typeof autosaveKey === "string" && autosaveKey ? JSON.stringify([method, path, autosaveKey]) : null;
         const previous = key && autosaves.get(key);
         if (coalesce && previous && previous.body === options.body) return previous.promise;
-        const promise = write(path, transportOptions);
+        const promise = write(path, transportOptions, intent);
         if (key) {
           const entry = { body: options.body, promise };
           autosaves.set(key, entry);
@@ -166,14 +193,23 @@
       return send(path, transportOptions);
     }
     function activityIntent(run) {
+      const intent = recoveryGuard();
+      activityIntents.add(intent);
       epoch += 1;
       state.pendingIntents += 1;
+      countCurrentIntents();
       emit();
-      const operation = intents.then(run).finally(() => { state.pendingIntents -= 1; emit(); });
+      const operation = intents.then(() => intent.isCurrent() ? run(intent) : null).finally(() => {
+        activityIntents.delete(intent);
+        state.pendingIntents -= 1;
+        countCurrentIntents();
+        emit();
+      });
       intents = operation.catch(() => {});
       return operation;
     }
-    return { state, request, activityIntent };
+
+    return { state, request, activityIntent, captureIntent: recoveryGuard };
   }
   return { createClientSync };
 });

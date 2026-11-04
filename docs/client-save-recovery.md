@@ -65,6 +65,17 @@ restored data. Summaries and new/queued mutations are blocked pending explicit
 resync. Acknowledged inconsistent mutation replies require a full-state read
 rather than silently applying an old mutation snapshot.
 
+Every captured activity intent carries a recovery-generation token. Beginning
+recovery, or observing a normal restore boundary, permanently invalidates running
+and queued older intents; explicit resync
+never revives them. The activity checks after autosave waits, the HTTP queue checks
+before execution, and transport checks after unlock and immediately before first
+send. Detached autosave controls/timers also retain their original token instead
+of silently recapturing old values after resync. Known unsent cancellation is not
+reported as an unknown write outcome. Rendering waits only for still-current
+activity intents, so the inspected recovery/resync snapshot can render while
+invalidated work is still unwinding. A new deliberate action uses a new token.
+
 Normal/background reads cannot clear the resync requirement. The user must use
 Refresh, which issues a READ with a local resync flag. It must confirm the same
 revision/restore head as the last inspected snapshot; if the head changes, another
@@ -84,7 +95,7 @@ responses without required metadata are refused rather than labeled current.
 ## Validation and recovery rollout HOLD
 
 Deterministic tests cover logical-control collisions, A-B-A, delayed/lost replies,
-complete-snapshot reconciliation, restore-marker loss, explicit resync, blocked
+complete-snapshot reconciliation, restore-marker loss, explicit resync, suspended running/queued activity cancellation, blocked
 queued mutations, stale 401s, repeated taps, backup warnings and separate refresh
 errors. HTTP receipt tests use temporary synthetic FILE storage with deliberately
 failed backup creation; they require no Redis changes or private data.

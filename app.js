@@ -268,10 +268,13 @@ async function sendApi(path, options = {}, context = {}) {
   const { headers = {}, retryAuth = true, ...fetchOptions } = options;
   const method = String(fetchOptions.method || "GET").toUpperCase();
   const isWrite = !["GET", "HEAD"].includes(method);
+  if (isWrite) context.assertCurrent?.();
   if (isWrite && !state.writeAccess) {
     const unlocked = await requestWriteAccess();
+    context.assertCurrent?.();
     if (!unlocked) throw new Error("Saves are locked.");
   }
+  if (isWrite) context.assertCurrent?.(); // Last guard immediately before first send.
   const response = await fetch(path, {
     ...fetchOptions,
     credentials: "same-origin",
@@ -305,7 +308,7 @@ function renderMessage() {
         : client.saveStatus === "blocked" ? client.writeError : "";
   const backup = client.backupWarning
     ? (client.saveStatus === "unconfirmed" ? "Earlier saved changes: backup unverified." : "Saved changes: backup unverified.") : "";
-  elements.message.textContent = [state.notice || save, backup, client.recoveryWarning,
+  elements.message.textContent = [state.notice || save, backup, client.recoveryWarning, client.intentNotice,
     client.refreshErrors.state ? `State refresh failed: ${client.refreshErrors.state}` : "",
     client.refreshErrors.summary ? `Summary refresh failed: ${client.refreshErrors.summary}` : "",
     client.refreshErrors.display ? `Display refresh failed: ${client.refreshErrors.display}` : ""
@@ -858,6 +861,7 @@ function exerciseLogHasData(payload) {
 }
 
 function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog = {}) {
+  const controlIntent = clientSync.captureIntent();
   let timer = null;
   const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
   const hasSavedLog = Object.keys(savedLog || {}).length > 0;
@@ -868,6 +872,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   let lastSaved = exerciseLogSignature(!hasSavedLog && !draft ? controls.payload() : savedLog);
 
   function completeRowSubtask() {
+    if (!controlIntent.isCurrent()) return;
     const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');
     if (!checkbox || checkbox.checked) return;
     checkbox.checked = true;
@@ -877,6 +882,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   let autoCompletePoll = null;
 
   function queueAutoComplete() {
+    if (!controlIntent.isCurrent()) return;
     const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');
     if (!checkbox || checkbox.checked) return;
     // Completing triggers a save + re-render; wait until focus leaves the
@@ -888,7 +894,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     if (autoCompletePoll) return;
     autoCompletePoll = window.setInterval(() => {
       const box = row.querySelector('input[type="checkbox"][data-subtask-id]');
-      if (!row.isConnected || !box || box.checked) {
+      if (!controlIntent.isCurrent() || !row.isConnected || !box || box.checked) {
         window.clearInterval(autoCompletePoll);
         autoCompletePoll = null;
         return;
@@ -902,12 +908,14 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   }
 
   async function flushAutosave({ explicit = false } = {}) {
+    if (!controlIntent.isCurrent()) return;
     const payload = controls.payload();
     const signature = exerciseLogSignature(payload);
     if (signature === lastSaved) return;
     setAutosaveStatus(controls.status, "Saving...", "is-saving");
     try {
-      await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false, coalesce: !explicit });
+      await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false, coalesce: !explicit, intent: controlIntent });
+      if (!controlIntent.isCurrent()) return;
       lastSaved = signature;
       clearExerciseDraft(activity.activity_id, payload.exercise_id);
       setAutosaveStatus(controls.status, "Saved", "is-saved");
@@ -915,7 +923,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
         if (exerciseLogHasData(payload)) queueAutoComplete();
       } catch (error) { reportDisplayError(error); }
     } catch (error) {
-      setAutosaveStatus(controls.status, "Save unconfirmed", "is-error");
+      setAutosaveStatus(controls.status, error.notSent ? "Not sent; review current state" : "Save unconfirmed", "is-error");
     }
   }
 
@@ -966,6 +974,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
 }
 
 function attachFeedbackAutosave(form, activity) {
+  const controlIntent = clientSync.captureIntent();
   const button = form.querySelector("button");
   const status = document.createElement("span");
   setAutosaveStatus(status, "Autosaves");
@@ -980,20 +989,22 @@ function attachFeedbackAutosave(form, activity) {
   let lastSaved = feedbackSignature(payload());
 
   async function flushAutosave({ explicit = false } = {}) {
+    if (!controlIntent.isCurrent()) return;
     const currentPayload = payload();
     const signature = feedbackSignature(currentPayload);
     if (signature === lastSaved) return;
     setAutosaveStatus(status, "Saving...", "is-saving");
     try {
-      await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false, coalesce: !explicit });
+      await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false, coalesce: !explicit, intent: controlIntent });
+      if (!controlIntent.isCurrent()) return;
       lastSaved = signature;
       setAutosaveStatus(status, "Saved", "is-saved");
       try {
         const fresh = activities().find(a => a.activity_id === activity.activity_id);
         if (fresh) renderCoachingDetails(fresh, form.closest("article"));
       } catch (error) { reportDisplayError(error); }
-    } catch {
-      setAutosaveStatus(status, "Save unconfirmed", "is-error");
+    } catch (error) {
+      setAutosaveStatus(status, error.notSent ? "Not sent; review current state" : "Save unconfirmed", "is-error");
     }
   }
 
@@ -2336,7 +2347,7 @@ function renderCoachMemories() {
 }
 
 function render() {
-  if (!state.data || clientSync.state.pendingWrites || clientSync.state.pendingIntents) return;
+  if (!state.data || clientSync.state.pendingWrites || clientSync.state.pendingCurrentIntents) return;
   try {
     activeAutosaveFlushers.clear();
     updateOverview();
@@ -2369,11 +2380,14 @@ async function loadState({ resync = false } = {}) {
 
 async function updateActivity(activityId, payload) {
   const body = JSON.stringify(payload); // Capture each tap before any await.
-  await clientSync.activityIntent(async () => {
+  await clientSync.activityIntent(async (intent) => {
+    if (!intent.isCurrent()) return;
     await flushActiveAutosaves();
+    if (!intent.isCurrent()) return;
     try {
-      await api(`/api/activities/${encodeURIComponent(activityId)}`, { method: "PATCH", body });
-    } catch {
+      await api(`/api/activities/${encodeURIComponent(activityId)}`, { method: "PATCH", body, intent });
+    } catch (error) {
+      if (!intent.isCurrent() || error.cancelledIntent) return;
       // Reads may verify a lost acknowledgement. They never replay this write.
       await loadState();
     }
@@ -2383,11 +2397,12 @@ async function updateActivity(activityId, payload) {
 }
 
 async function saveFeedback(activityId, payload, options = {}) {
-  const { silent = false, rerender = true, coalesce = silent && !rerender } = options;
+  const { silent = false, rerender = true, coalesce = silent && !rerender, intent } = options;
   try {
     await api(`/api/activities/${encodeURIComponent(activityId)}/feedback`, {
       method: "POST",
       coalesce,
+      intent,
       autosaveKey: JSON.stringify(["feedback", activityId]),
       body: JSON.stringify(payload)
     });
@@ -2406,11 +2421,12 @@ async function saveFeedback(activityId, payload, options = {}) {
 }
 
 async function saveExerciseLog(activityId, payload, options = {}) {
-  const { silent = false, rerender = true, coalesce = silent && !rerender } = options;
+  const { silent = false, rerender = true, coalesce = silent && !rerender, intent } = options;
   try {
     await api(`/api/activities/${encodeURIComponent(activityId)}/exercise-log`, {
       method: "POST",
       coalesce,
+      intent,
       autosaveKey: JSON.stringify(["exercise-log", activityId, payload.exercise_id]),
       body: JSON.stringify(payload)
     });

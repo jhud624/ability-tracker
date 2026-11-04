@@ -552,3 +552,93 @@ test("queued mutations do not execute after an earlier acknowledged response dis
   assert.equal(calls, 3, "two reads plus exactly one mutation");
   assert.equal(sync.state.saveStatus, "blocked");
 });
+
+
+test("browser: recovery and resync cancel running and queued activity intents, render inspected state before stalled flush unwinds", async () => {
+  const flush = deferred(); const sent = []; let result = snapshot(2, { restored_at: "2026-11-04T10:00:00.000Z", completions: { synthetic: { subtasks: { a: false } } } });
+  const app = browser(async (path, options = {}) => {
+    if (options.method === "PATCH") { sent.push(JSON.parse(options.body)); result = snapshot(12, { completions: { synthetic: { subtasks: { a: false } } } }); return response(result); }
+    return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" });
+  });
+  await app.run("loadState()");
+  app.installActivityHandlers(); app.context.activeAutosaveFlushers.add(() => flush.promise);
+  const checkbox = { dataset: { subtaskId: "a" }, checked: true };
+  const event = { target: { closest: () => checkbox } };
+  const running = app.listeners.subtask(event);
+  checkbox.checked = false; const queued = app.listeners.subtask(event);
+  await turn(); assert.equal(app.sync.state.pendingIntents, 2); assert.deepEqual(sent, []);
+  result = snapshot(11, { completions: { synthetic: { subtasks: { a: false } } } });
+  await app.run("loadState()");
+  assert.equal(app.sync.state.recoveryRequired, true);
+  assert.equal(app.sync.state.pendingIntents, 2);
+  assert.equal(app.sync.state.pendingCurrentIntents, 0);
+  assert.deepEqual(app.rendered.map(x => x.revision), [2, 11]);
+  await app.run("loadState({resync:true})");
+  assert.equal(app.sync.state.recoveryRequired, false);
+  assert.equal(app.sync.state.pendingIntents, 2, "old intent work is still suspended");
+  assert.deepEqual(app.rendered.map(x => x.revision), [2, 11, 11]);
+  assert.match(app.elements.message.textContent, /pending edits were canceled/);
+  flush.resolve(); await Promise.all([running, queued]);
+  assert.deepEqual(sent, [], "neither running nor queued pre-recovery tap was replayed after resync");
+  assert.equal(app.sync.state.pendingIntents, 0);
+  assert.equal(app.state.data.revision, 11);
+  await app.run('updateActivity("synthetic", {subtask_id:"a",completed:false})');
+  assert.deepEqual(sent, [{ subtask_id: "a", completed: false }], "only a new deliberate action sends a mutation");
+});
+
+test("browser: a single captured checkbox intent remains canceled after recovery and resync release its autosave wait", async () => {
+  const flush = deferred(); let writes = 0;
+  let result = snapshot(2, { restored_at: "2026-11-04T10:00:00.000Z" });
+  const app = browser(async (path, options = {}) => { if (options.method === "PATCH") writes++; return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" }); });
+  await app.run("loadState()"); app.context.activeAutosaveFlushers.add(() => flush.promise);
+  const action = app.run('updateActivity("synthetic", {subtask_id:"a",completed:true})');
+  await turn(); result = snapshot(11); await app.run("loadState()"); await app.run("loadState({resync:true})");
+  assert.equal(app.sync.state.pendingIntents, 1); assert.equal(app.rendered.at(-1).revision, 11);
+  flush.resolve(); await action; assert.equal(writes, 0); assert.equal(app.state.data.revision, 11);
+});
+
+test("captured guards never revive after explicit resync, including an HTTP request not yet enqueued", async () => {
+  let result; let writes = 0; const sync = await seeded((path, options = {}) => { if (options.method) writes++; return result; });
+  const intent = sync.captureIntent();
+  result = snapshot(0); await sync.request("/api/state"); await sync.request("/api/state", {resync:true});
+  assert.equal(intent.isCurrent(), false);
+  await assert.rejects(sync.request("/write", {method:"PATCH", intent}), error => error.notSent && error.cancelledIntent);
+  assert.equal(writes, 0);
+});
+
+test("browser transport rechecks a captured intent after asynchronous unlock and immediately before first send", async () => {
+  const unlock = deferred(); let current = true, writes = 0;
+  const app = browser(async () => { writes++; return response(snapshot(2)); });
+  app.state.writeAccess = false;
+  app.context.requestWriteAccess = () => unlock.promise;
+  app.context.guard = { assertCurrent() { if (!current) { const error = new Error("canceled"); error.notSent = true; throw error; } } };
+  const action = app.run('sendApi("/write", {method:"PATCH",body:"{}"}, guard)');
+  await turn(); current = false; unlock.resolve(true);
+  await assert.rejects(action, error => error.notSent);
+  assert.equal(writes, 0);
+});
+
+test("browser: detached pre-recovery feedback control cannot silently recapture its old payload after resync", async () => {
+  let result = snapshot(2, { restored_at: "2026-11-04T10:00:00.000Z" }); let writes = 0;
+  const app = browser(async (path, options = {}) => { if (options.method) writes++; return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" }); });
+  await app.run("loadState()");
+  const events = {}, form = {values:{notes:"old"},elements:{},querySelector:()=>null,addEventListener:(name,fn)=>{events[name]=fn},closest:()=>({})};
+  app.context.form = form;
+  app.run('attachFeedbackAutosave(form, {activity_id:"synthetic"})');
+  const oldFlush = [...app.context.activeAutosaveFlushers][0]; form.values.notes = "captured old control change";
+  result = snapshot(11); await app.run("loadState()"); await app.run("loadState({resync:true})");
+  await oldFlush(); assert.equal(writes, 0);
+});
+
+
+test("browser: an observed normal restore also cancels suspended pre-restore activity intents without recapturing them", async () => {
+  const flush = deferred(); let writes = 0; let result = snapshot(10);
+  const app = browser(async (path, options = {}) => { if (options.method === "PATCH") writes++; return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" }); });
+  await app.run("loadState()"); app.context.activeAutosaveFlushers.add(() => flush.promise);
+  const action = app.run('updateActivity("synthetic", {completed:true})'); await turn();
+  result = snapshot(2, { restored_at: "2026-11-04T10:00:00.000Z" }); await app.run("loadState()");
+  assert.equal(app.sync.state.recoveryRequired, false);
+  assert.equal(app.sync.state.pendingIntents, 1); assert.equal(app.sync.state.pendingCurrentIntents, 0);
+  assert.equal(app.rendered.at(-1).revision, 2);
+  flush.resolve(); await action; assert.equal(writes, 0);
+});
