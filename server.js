@@ -1910,6 +1910,8 @@ function createCoachSummary(store) {
   if (!plan) {
     return {
       generated_at: nowIso(),
+      revision: store.revision,
+      restored_at: store.restored_at || null,
       goals: store.goals,
       active_plan: null,
       summary_text: "No active plan is available yet."
@@ -1935,6 +1937,8 @@ function createCoachSummary(store) {
 
   const summaryJson = {
     generated_at: nowIso(),
+    revision: store.revision,
+    restored_at: store.restored_at || null,
     run_plan: buildRunPlanFromState({ ...store, active_plan: activePlan(store) }),
     coaching_brief: coachingBrief(store),
     goals: store.goals,
@@ -2468,7 +2472,7 @@ async function handleApi(req, res, pathname) {
       saved = result.saved;
       return { ...current, coach_memories: result.coach_memories };
     }, { action: "coach_memory.upsert", target: rawMemories.map((memory) => memory.memory_id || slugify(memory.key)).join(",") });
-    sendJson(res, 200, { saved, coach_memories: nextStore.coach_memories || [], storage_warnings: nextStore.storage_warnings || [] });
+    sendJson(res, 200, { saved, coach_memories: nextStore.coach_memories || [], revision: nextStore.revision, restored_at: nextStore.restored_at || null, storage_warnings: nextStore.storage_warnings || [] });
     return;
   }
 
@@ -2482,7 +2486,7 @@ async function handleApi(req, res, pathname) {
       ...current,
       coach_memories: (current.coach_memories || []).filter((memory) => memory.memory_id !== memoryId)
     }), { action: "coach_memory.delete", target: memoryId });
-    sendJson(res, 200, { deleted_memory_id: memoryId, coach_memories: nextStore.coach_memories || [] });
+    sendJson(res, 200, { deleted_memory_id: memoryId, coach_memories: nextStore.coach_memories || [], revision: nextStore.revision, restored_at: nextStore.restored_at || null, storage_warnings: nextStore.storage_warnings || [] });
     return;
   }
 

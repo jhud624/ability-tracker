@@ -2,7 +2,7 @@ import { copyFile, lstat, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const PUBLIC_ASSETS = ["index.html", "app.js", "styles.css"];
+export const PUBLIC_ASSETS = ["index.html", "client-sync.js", "app.js", "styles.css"];
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 
 export async function buildStaticOutput(root = ROOT) {

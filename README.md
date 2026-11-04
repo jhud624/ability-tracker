@@ -295,3 +295,9 @@ Vacation and purposeful deload windows are stored separately from goals so they 
 ```
 
 `reason` is `vacation`, `planned_deload`, or `other`. `training_load` is `full_deload`, `reduced`, or `normal`. Planning context includes these periods and explicit guidance. Required activities dated inside a full deload are excused from adherence and miss streaks; the run-plan view reduces overlapping weeks and adds a gradual two-week return.
+
+## Browser save recovery
+
+The client distinguishes acknowledged saves, backup warnings and refresh failures.
+See [browser save and recovery invariants](docs/client-save-recovery.md) for ordering,
+partial-receipt reconciliation and explicit recovery resync behavior.

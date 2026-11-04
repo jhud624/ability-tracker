@@ -2,7 +2,9 @@ const state = {
   data: null,
   activeView: "today-view",
   todayOverrideActivityId: null,
-  writeAccess: false
+  writeAccess: false,
+  notice: "",
+  noticeError: false
 };
 
 const elements = {
@@ -73,6 +75,20 @@ const elements = {
   unlockCancel: document.querySelector("#unlock-cancel"),
   message: document.querySelector("#message")
 };
+
+const clientSync = CoachClientSync.createClientSync({
+  send: sendApi,
+  onChange(client) {
+    if (state.saveSequence !== client.saveSequence) {
+      state.saveSequence = client.saveSequence;
+      state.notice = "";
+      state.noticeError = false;
+    }
+    state.data = client.data;
+    elements.coachSummary.value = client.summary?.summary_text || "";
+    renderMessage();
+  }
+});
 
 let unlockResolver = null;
 const EXERCISE_DRAFT_PREFIX = "coach_loop_exercise_log_draft:";
@@ -241,6 +257,14 @@ async function lockWriteAccess(message = "Saves locked.", isError = false) {
 }
 
 async function api(path, options = {}) {
+  const value = await clientSync.request(path, options);
+  if (options.method && !["GET", "HEAD"].includes(options.method.toUpperCase()) && value && (!clientSync.state.data || clientSync.state.needsReconcile)) {
+    await clientSync.request("/api/state");
+  }
+  return value;
+}
+
+async function sendApi(path, options = {}, context = {}) {
   const { headers = {}, retryAuth = true, ...fetchOptions } = options;
   const method = String(fetchOptions.method || "GET").toUpperCase();
   const isWrite = !["GET", "HEAD"].includes(method);
@@ -258,29 +282,59 @@ async function api(path, options = {}) {
   });
   const payload = await response.json();
   if (response.status === 401 && path !== "/api/session" && retryAuth !== false) {
+    if (context.isCurrent && !context.isCurrent()) throw new Error("Obsolete authorization response ignored.");
     state.writeAccess = false;
     updateWriteAccessUi();
     setMessage(isWrite ? "Your save session expired. Unlock saves and retry." : "Unlock Coach Loop to view your data.", true);
     const unlocked = await requestWriteAccess();
-    if (unlocked) {
-      return api(path, { ...options, retryAuth: false });
+    if (unlocked && !isWrite) {
+      if (context.isCurrent && !context.isCurrent()) throw new Error("Obsolete authorization response ignored.");
+      return sendApi(path, { ...options, retryAuth: false }, context);
     }
+    if (isWrite) throw new Error("The save was not authorized. Verify saved state before trying again.");
   }
   if (!response.ok) throw new Error(payload.error || "Request failed");
-  if (isWrite) state.storageWarning = (payload.storage_warnings || []).join(" ");
   return payload;
 }
 
+function renderMessage() {
+  const client = clientSync.state;
+  const save = client.pendingWrites ? "Saving…"
+    : client.saveStatus === "saved" ? "Saved."
+      : client.saveStatus === "unconfirmed" ? `Save outcome unconfirmed: ${client.writeError}`
+        : client.saveStatus === "blocked" ? client.writeError : "";
+  const backup = client.backupWarning
+    ? (client.saveStatus === "unconfirmed" ? "Earlier saved changes: backup unverified." : "Saved changes: backup unverified.") : "";
+  elements.message.textContent = [state.notice || save, backup, client.recoveryWarning,
+    client.refreshErrors.state ? `State refresh failed: ${client.refreshErrors.state}` : "",
+    client.refreshErrors.summary ? `Summary refresh failed: ${client.refreshErrors.summary}` : "",
+    client.refreshErrors.display ? `Display refresh failed: ${client.refreshErrors.display}` : ""
+  ].filter(Boolean).join(" ");
+  elements.message.classList.toggle("is-error", Boolean(state.noticeError || client.writeError || client.recoveryRequired || Object.keys(client.refreshErrors).length));
+  elements.message.classList.toggle("is-warning", Boolean(backup));
+}
+
 function setMessage(message, isError = false) {
-  elements.message.textContent = [message, state.storageWarning].filter(Boolean).join(" ");
-  elements.message.classList.toggle("is-error", isError);
-  if (message) {
-    window.clearTimeout(setMessage.timer);
-    setMessage.timer = window.setTimeout(() => {
-      elements.message.textContent = "";
-      elements.message.classList.remove("is-error");
-    }, state.storageWarning ? 15000 : 4500);
+  if (isError && message === clientSync.state.writeError) {
+    state.notice = "";
+    state.noticeError = false;
+    renderMessage();
+    return;
   }
+  state.notice = message;
+  state.noticeError = isError;
+  renderMessage();
+  window.clearTimeout(setMessage.timer);
+  if (message) setMessage.timer = window.setTimeout(() => {
+    state.notice = "";
+    state.noticeError = false;
+    renderMessage(); // Backup and refresh outcomes do not expire with a toast.
+  }, 4500);
+}
+
+function reportDisplayError(error) {
+  clientSync.state.refreshErrors.display = error.message || "Unable to redraw saved state.";
+  renderMessage();
 }
 
 function setBackendStatus(connected) {
@@ -847,19 +901,21 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     }, 700);
   }
 
-  async function flushAutosave() {
+  async function flushAutosave({ explicit = false } = {}) {
     const payload = controls.payload();
     const signature = exerciseLogSignature(payload);
     if (signature === lastSaved) return;
     setAutosaveStatus(controls.status, "Saving...", "is-saving");
     try {
-      await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false });
+      await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false, coalesce: !explicit });
       lastSaved = signature;
       clearExerciseDraft(activity.activity_id, payload.exercise_id);
       setAutosaveStatus(controls.status, "Saved", "is-saved");
-      if (exerciseLogHasData(payload)) queueAutoComplete();
+      try {
+        if (exerciseLogHasData(payload)) queueAutoComplete();
+      } catch (error) { reportDisplayError(error); }
     } catch (error) {
-      setAutosaveStatus(controls.status, "Not saved", "is-error");
+      setAutosaveStatus(controls.status, "Save unconfirmed", "is-error");
     }
   }
 
@@ -873,9 +929,9 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     timer = window.setTimeout(flushAutosave, delay);
   }
 
-  async function flushNow() {
+  async function flushNow(options) {
     window.clearTimeout(timer);
-    await flushAutosave();
+    await flushAutosave(options);
   }
 
   activeAutosaveFlushers.add(flushNow);
@@ -905,7 +961,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
 
   row.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await flushNow();
+    await flushNow({ explicit: true });
   });
 }
 
@@ -923,19 +979,21 @@ function attachFeedbackAutosave(form, activity) {
   let timer = null;
   let lastSaved = feedbackSignature(payload());
 
-  async function flushAutosave() {
+  async function flushAutosave({ explicit = false } = {}) {
     const currentPayload = payload();
     const signature = feedbackSignature(currentPayload);
     if (signature === lastSaved) return;
     setAutosaveStatus(status, "Saving...", "is-saving");
     try {
-      await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false });
+      await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false, coalesce: !explicit });
       lastSaved = signature;
-      const fresh = activities().find(a => a.activity_id === activity.activity_id);
-      if (fresh) renderCoachingDetails(fresh, form.closest("article"));
       setAutosaveStatus(status, "Saved", "is-saved");
+      try {
+        const fresh = activities().find(a => a.activity_id === activity.activity_id);
+        if (fresh) renderCoachingDetails(fresh, form.closest("article"));
+      } catch (error) { reportDisplayError(error); }
     } catch {
-      setAutosaveStatus(status, "Not saved", "is-error");
+      setAutosaveStatus(status, "Save unconfirmed", "is-error");
     }
   }
 
@@ -944,9 +1002,9 @@ function attachFeedbackAutosave(form, activity) {
     timer = window.setTimeout(flushAutosave, delay);
   }
 
-  async function flushNow() {
+  async function flushNow(options) {
     window.clearTimeout(timer);
-    await flushAutosave();
+    await flushAutosave(options);
   }
 
   activeAutosaveFlushers.add(flushNow);
@@ -960,7 +1018,7 @@ function attachFeedbackAutosave(form, activity) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await flushNow();
+    await flushNow({ explicit: true });
   });
 }
 
@@ -1301,21 +1359,21 @@ function renderActivity(activity, options = {}) {
   attachFeedbackAutosave(form, activity);
 
   checkButton.addEventListener("click", async () => {
-    await flushActiveAutosaves();
+    const previous = checkButton.dataset.pendingCompleted === undefined
+      ? completed : checkButton.dataset.pendingCompleted === "true";
+    const next = !previous;
+    checkButton.dataset.pendingCompleted = String(next);
     await updateActivity(activity.activity_id, {
-      completed: !completed,
-      logged_date: !completed ? options.loggedDate : null
+      completed: next,
+      logged_date: next ? options.loggedDate : null
     });
   });
 
   subtaskList.addEventListener("change", async (event) => {
     const checkbox = event.target.closest("[data-subtask-id]");
     if (!checkbox) return;
-    await flushActiveAutosaves();
-    await updateActivity(activity.activity_id, {
-      subtask_id: checkbox.dataset.subtaskId,
-      completed: checkbox.checked
-    });
+    const intent = { subtask_id: checkbox.dataset.subtaskId, completed: checkbox.checked };
+    await updateActivity(activity.activity_id, intent);
   });
 
   return node;
@@ -2130,7 +2188,7 @@ function editPlanningPeriod(period) {
 async function removePlanningPeriod(period) {
   if (!window.confirm(`Remove ${period.title}?`)) return;
   try {
-    state.data = await api(`/api/planning-periods/${encodeURIComponent(period.period_id)}`, { method: "DELETE" });
+    await api(`/api/planning-periods/${encodeURIComponent(period.period_id)}`, { method: "DELETE" });
     render();
     await refreshCoachSummary();
     setMessage("Planning period removed.");
@@ -2206,8 +2264,7 @@ function editCoachMemory(memory) {
 async function removeCoachMemory(memory) {
   if (!window.confirm(`Forget “${memory.text}”?`)) return;
   try {
-    const response = await api(`/api/coach-memories/${encodeURIComponent(memory.memory_id)}`, { method: "DELETE" });
-    state.data.coach_memories = response.coach_memories;
+    await api(`/api/coach-memories/${encodeURIComponent(memory.memory_id)}`, { method: "DELETE" });
     renderCoachMemories();
     await refreshCoachSummary();
     setMessage("Memory removed.");
@@ -2279,50 +2336,59 @@ function renderCoachMemories() {
 }
 
 function render() {
-  activeAutosaveFlushers.clear();
-  updateOverview();
-  renderToday();
-  renderWeek();
-  renderLibrary();
-  renderGoals();
-  renderCoachMemories();
-  renderPlanningPeriods();
-  renderGear();
-  renderActuals();
-  renderRunTracking();
+  if (!state.data || clientSync.state.pendingWrites || clientSync.state.pendingIntents) return;
+  try {
+    activeAutosaveFlushers.clear();
+    updateOverview();
+    renderToday();
+    renderWeek();
+    renderLibrary();
+    renderGoals();
+    renderCoachMemories();
+    renderPlanningPeriods();
+    renderGear();
+    renderActuals();
+    renderRunTracking();
+    delete clientSync.state.refreshErrors.display;
+  } catch (error) {
+    clientSync.state.refreshErrors.display = error.message || "Unable to redraw saved state.";
+  }
+  renderMessage();
 }
 
-async function loadState() {
-  try {
-    state.data = await api("/api/state");
-    setBackendStatus(true);
-    render();
-    await refreshCoachSummary();
-  } catch (error) {
-    setBackendStatus(false);
-    setMessage(error.message, true);
+async function loadState({ resync = false } = {}) {
+  const loaded = await api("/api/state", { resync });
+  if (!loaded) {
+    if (clientSync.state.refreshErrors.state) setBackendStatus(false);
+    return;
   }
+  setBackendStatus(true);
+  render();
+  await refreshCoachSummary();
 }
 
 async function updateActivity(activityId, payload) {
-  try {
-    state.data = await api(`/api/activities/${encodeURIComponent(activityId)}`, {
-      method: "PATCH",
-      body: JSON.stringify(payload)
-    });
-    render();
-    await refreshCoachSummary();
-  } catch (error) {
-    setMessage(error.message, true);
-    await loadState();
-  }
+  const body = JSON.stringify(payload); // Capture each tap before any await.
+  await clientSync.activityIntent(async () => {
+    await flushActiveAutosaves();
+    try {
+      await api(`/api/activities/${encodeURIComponent(activityId)}`, { method: "PATCH", body });
+    } catch {
+      // Reads may verify a lost acknowledgement. They never replay this write.
+      await loadState();
+    }
+  });
+  render();
+  await refreshCoachSummary();
 }
 
 async function saveFeedback(activityId, payload, options = {}) {
-  const { silent = false, rerender = true } = options;
+  const { silent = false, rerender = true, coalesce = silent && !rerender } = options;
   try {
-    state.data = await api(`/api/activities/${encodeURIComponent(activityId)}/feedback`, {
+    await api(`/api/activities/${encodeURIComponent(activityId)}/feedback`, {
       method: "POST",
+      coalesce,
+      autosaveKey: JSON.stringify(["feedback", activityId]),
       body: JSON.stringify(payload)
     });
     if (rerender) render();
@@ -2340,10 +2406,12 @@ async function saveFeedback(activityId, payload, options = {}) {
 }
 
 async function saveExerciseLog(activityId, payload, options = {}) {
-  const { silent = false, rerender = true } = options;
+  const { silent = false, rerender = true, coalesce = silent && !rerender } = options;
   try {
-    state.data = await api(`/api/activities/${encodeURIComponent(activityId)}/exercise-log`, {
+    await api(`/api/activities/${encodeURIComponent(activityId)}/exercise-log`, {
       method: "POST",
+      coalesce,
+      autosaveKey: JSON.stringify(["exercise-log", activityId, payload.exercise_id]),
       body: JSON.stringify(payload)
     });
     if (rerender) render();
@@ -2362,7 +2430,7 @@ async function saveExerciseLog(activityId, payload, options = {}) {
 
 async function linkActivityActual(activityId, actualId) {
   try {
-    state.data = await api(`/api/activities/${encodeURIComponent(activityId)}/actual-link`, {
+    await api(`/api/activities/${encodeURIComponent(activityId)}/actual-link`, {
       method: "POST",
       body: JSON.stringify({ actual_id: actualId || null })
     });
@@ -2381,9 +2449,7 @@ function parseTextareaJson(textarea) {
 }
 
 async function refreshCoachSummary() {
-  const summary = await api("/api/coach-summary");
-  elements.coachSummary.value = summary.summary_text;
-  return summary;
+  return api("/api/coach-summary");
 }
 
 elements.tabButtons.forEach((button) => {
@@ -2394,7 +2460,7 @@ elements.tabButtons.forEach((button) => {
   });
 });
 
-elements.refreshButton.addEventListener("click", loadState);
+elements.refreshButton.addEventListener("click", () => loadState({ resync: true }));
 
 elements.completeWorkout.addEventListener("click", async () => {
   const pending = todaysList().filter((activity) => !activity.completion?.completed);
@@ -2466,7 +2532,7 @@ elements.planImportForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const payload = parseTextareaJson(elements.planJson);
-    state.data = await api("/api/plans/import", {
+    await api("/api/plans/import", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -2492,7 +2558,7 @@ elements.goalsForm.addEventListener("submit", async (event) => {
       back_health: elements.goalBackHealth.value.trim(),
       recovery: elements.goalRecovery.value.trim()
     };
-    state.data = await api("/api/goals", {
+    await api("/api/goals", {
       method: "PUT",
       body: JSON.stringify({ goals })
     });
@@ -2516,7 +2582,7 @@ elements.planningPeriodForm.addEventListener("submit", async (event) => {
       training_load: elements.planningPeriodLoad.value,
       notes: elements.planningPeriodNotes.value.trim()
     };
-    state.data = await api("/api/planning-periods/upsert", {
+    await api("/api/planning-periods/upsert", {
       method: "POST",
       body: JSON.stringify({ planning_periods: [period] })
     });
@@ -2534,7 +2600,7 @@ elements.planningPeriodCancel.addEventListener("click", resetPlanningPeriodForm)
 elements.coachNotesForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    state.data = await api("/api/coach-notes", {
+    await api("/api/coach-notes", {
       method: "PUT",
       body: JSON.stringify({ coach_notes: elements.coachNotes.value })
     });
@@ -2560,11 +2626,10 @@ elements.coachMemoryForm.addEventListener("submit", async (event) => {
       effective_from: document.querySelector("#coach-memory-from").value || null,
       expires_at: document.querySelector("#coach-memory-expires").value || null
     };
-    const response = await api("/api/coach-memories/upsert", {
+    await api("/api/coach-memories/upsert", {
       method: "POST",
       body: JSON.stringify({ coach_memories: [coachMemory] })
     });
-    state.data.coach_memories = response.coach_memories;
     resetCoachMemoryForm();
     renderCoachMemories();
     await refreshCoachSummary();
@@ -2580,7 +2645,7 @@ elements.actualsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const payload = parseTextareaJson(elements.actualsJson);
-    state.data = await api("/api/health/import", {
+    await api("/api/health/import", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -2604,7 +2669,7 @@ elements.gearForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const payload = parseTextareaJson(elements.gearJson);
-    state.data = await api("/api/gear/upsert", {
+    await api("/api/gear/upsert", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -2620,6 +2685,7 @@ elements.gearForm.addEventListener("submit", async (event) => {
 elements.copySummaryButton.addEventListener("click", async () => {
   try {
     const summary = await refreshCoachSummary();
+    if (!summary) throw new Error("The summary is not current. Refresh saved state before copying it.");
     await navigator.clipboard.writeText(summary.summary_text);
     setMessage("Coach summary copied.");
   } catch (error) {
