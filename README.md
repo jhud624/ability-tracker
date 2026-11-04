@@ -23,10 +23,17 @@ A local-first workout coaching dashboard that lets ChatGPT generate weekly plans
 Start the backend:
 
 ```bash
-npm start
+COACH_LOOP_ALLOW_UNAUTHENTICATED_LOCAL=true npm start
 ```
 
 Then open `http://127.0.0.1:4173`.
+
+The default listener is loopback only. Without credentials, data and MCP endpoints
+are locked unless this explicit development flag is set. The flag is ignored in
+production/on Vercel, cannot bypass configured credentials, and only accepts direct
+loopback requests with a loopback Host header. Forwarded/proxied requests are rejected.
+For authenticated LAN use, set `COACH_LOOP_HOST` explicitly and configure API/MCP
+credentials; unauthenticated local mode refuses a non-loopback listener.
 
 Run the tests:
 
@@ -37,6 +44,21 @@ npm test
 ## MCP servers
 
 Coach Loop includes MCP servers that let a compatible client read and update the app through tools.
+
+The SDK dependency line remains 1.x. The resolved HTTP adapter now requires Node
+20 or later (previously the manifest allowed Node 18).
+
+MCP HTTP requests are limited to 2 MiB of UTF-8 JSON, 100 messages per batch,
+64 nesting levels, and 100,000 combined JSON array elements/object members per
+request. Pre-parsed bodies receive the same checks using their canonical JSON
+size; declared and streamed byte limits also apply. Invalid JSON/batches/depth
+receive 400, and byte/member overflows receive 413 after authentication.
+
+Every MCP server, including stdio, explicitly limits each tool's arguments to
+10,000 combined array elements/object members before schema validation. Calls
+above this limit return a tool error without contacting the API. Large health
+imports should be divided into smaller calls. The separate non-MCP API's existing
+body handling is unchanged. Limits are defined together in `mcp-limits.js`.
 
 Use the hosted MCP endpoint for ChatGPT:
 
@@ -110,6 +132,12 @@ For a deployed Coach Loop URL, set `COACH_LOOP_API_URL` to that origin.
 
 The app is Vercel-compatible through `api/[...path].js` and `api/mcp.js`.
 
+`npm run build` generates `dist/` containing only `index.html`, `app.js`, and
+`styles.css`. `vercel.json` explicitly uses this as its static output directory;
+the repository root must never be used as the public output. The root `api/`
+functions and existing API/OAuth/MCP rewrites remain in place for serverless
+execution. Backend source is a function dependency, not a public static asset.
+
 ```bash
 npx vercel --prod
 ```
@@ -139,7 +167,29 @@ COACH_LOOP_OAUTH_PASSWORD=<password entered on the authorization page>
 COACH_LOOP_OAUTH_SIGNING_SECRET=<stable secret for OAuth codes and tokens>
 ```
 
-When `COACH_LOOP_API_TOKEN` is set, both reads and writes to personal data endpoints require either the owner session cookie or a bearer token. Static assets, health checks, OAuth metadata, and OAuth registration/authorization endpoints remain public.
+Both reads and writes to personal data endpoints require an owner session signed
+with a configured secret or a matching API bearer token. Missing credentials fail
+closed. Hosted MCP separately requires `COACH_LOOP_MCP_TOKEN` or enabled OAuth;
+the API token alone never authorizes an MCP client. The scheduled backup route
+requires `COACH_LOOP_CRON_SECRET` or `CRON_SECRET`, even during local development.
+
+Hosted MCP also requires `COACH_LOOP_API_TOKEN` for its internal API requests,
+including when OAuth has a separate password and signing secret. In production
+or on Vercel, an enabled MCP service without that API credential returns 503
+before login, authorization-code/token issuance, or MCP initialization/tool
+discovery. Configure API and MCP authentication together before enabling hosted
+MCP; a dashboard owner cookie is not forwarded as an internal MCP credential.
+
+Vercel's scheduled cron invocations specifically require `CRON_SECRET`: Vercel
+sends that value as the Authorization bearer. `COACH_LOOP_CRON_SECRET` alone
+does not configure the scheduler; it only supports callers supplying their own
+bearer. If both variables are set, keep their values equal because the explicit
+Coach Loop override takes precedence. No secret values belong in this file.
+
+Only `/`, `/index.html`, `/app.js`, and `/styles.css` are public static assets.
+Repository files, dotfiles, data, symlinks, and arbitrary extensionless paths are
+not served. Health checks, OAuth metadata, and OAuth registration/authorization
+endpoints remain public.
 
 Use `COACH_LOOP_REQUIRE_MCP_OAUTH=true` for ChatGPT connector auth. Leave `COACH_LOOP_MCP_TOKEN` unset for ChatGPT unless you specifically need a static bearer-token bypass for another MCP client.
 

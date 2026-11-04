@@ -1,4 +1,5 @@
 import test from "node:test";
+process.env.COACH_LOOP_ALLOW_UNAUTHENTICATED_LOCAL = "true";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { once } from "node:events";
@@ -274,15 +275,19 @@ test("Coach Loop hosted MCP endpoint works over Streamable HTTP", async () => {
 
 test("Coach Loop hosted MCP writes persist through the protected API path", async () => {
   const previousEnv = {
+    COACH_LOOP_MCP_TOKEN: process.env.COACH_LOOP_MCP_TOKEN,
     COACH_LOOP_API_TOKEN: process.env.COACH_LOOP_API_TOKEN,
     COACH_LOOP_DATA_DIR: process.env.COACH_LOOP_DATA_DIR
   };
   process.env.COACH_LOOP_API_TOKEN = "test-api-token";
+  process.env.COACH_LOOP_MCP_TOKEN = "test-mcp-token";
   process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-hosted-mcp-write-test-`);
 
   const { server, url } = await startHttpServer();
   const client = new Client({ name: "coach-loop-http-write-test", version: "0.1.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`));
+  const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`), {
+    requestInit: { headers: { authorization: "Bearer test-mcp-token" } }
+  });
 
   try {
     await client.connect(transport);
@@ -335,6 +340,9 @@ test("Coach Loop hosted MCP writes persist through the protected API path", asyn
 
 test("Coach Loop OAuth flow protects MCP access", async () => {
   const previousEnv = {
+    NODE_ENV: process.env.NODE_ENV,
+    COACH_LOOP_ALLOW_FILE_STORAGE: process.env.COACH_LOOP_ALLOW_FILE_STORAGE,
+    COACH_LOOP_OAUTH_SIGNING_SECRET: process.env.COACH_LOOP_OAUTH_SIGNING_SECRET,
     COACH_LOOP_API_TOKEN: process.env.COACH_LOOP_API_TOKEN,
     COACH_LOOP_OAUTH_PASSWORD: process.env.COACH_LOOP_OAUTH_PASSWORD,
     COACH_LOOP_REQUIRE_MCP_OAUTH: process.env.COACH_LOOP_REQUIRE_MCP_OAUTH
@@ -342,10 +350,21 @@ test("Coach Loop OAuth flow protects MCP access", async () => {
   process.env.COACH_LOOP_API_TOKEN = "test-api-token";
   process.env.COACH_LOOP_OAUTH_PASSWORD = "test-owner-password";
   process.env.COACH_LOOP_REQUIRE_MCP_OAUTH = "true";
+  process.env.NODE_ENV = "production";
+  process.env.COACH_LOOP_ALLOW_FILE_STORAGE = "true";
+  process.env.COACH_LOOP_OAUTH_SIGNING_SECRET = "synthetic-separate-signing-secret";
 
   const { server, url } = await startHttpServer();
 
   try {
+    const login = await fetch(`${url}/api/session/login`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: "test-owner-password" })
+    });
+    assert.equal(login.status, 200);
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    const state = await fetch(`${url}/api/state`, { headers: { cookie } });
+    assert.equal(state.status, 200);
     const metadata = await fetch(`${url}/.well-known/oauth-protected-resource`).then((response) => response.json());
     assert.deepEqual(metadata.authorization_servers, [url]);
     assert.equal(metadata.resource, `${url}/mcp`);
@@ -438,6 +457,9 @@ test("Coach Loop OAuth flow protects MCP access", async () => {
       await client.connect(transport);
       const tools = await client.listTools();
       assert.ok(tools.tools.map((tool) => tool.name).includes("get_planning_context"));
+      const stateResult = await client.callTool({ name: "get_state", arguments: {} });
+      assert.notEqual(stateResult.isError, true);
+      assert.ok(Object.hasOwn(JSON.parse(stateResult.content[0].text), "active_plan"));
     } finally {
       await client.close();
     }
@@ -570,10 +592,20 @@ test("Coach Loop MCP requires write scope for mutating tools", async () => {
       await client.connect(transport);
       const stateResult = await client.callTool({ name: "get_state", arguments: {} });
       assert.equal(stateResult.content[0].type, "text");
-      await assert.rejects(
-        () => client.callTool({ name: "update_goals", arguments: { goals: { primary: "Should not write" } } }),
-        /Authorization|401|Unauthorized|MCP|error/i
-      );
+      for (const tool of [
+        { name: "update_goals", arguments: { goals: { primary: "Should not write" } } },
+        { name: "upsert_planning_periods", arguments: { planning_periods: [{
+          period_id: "scope-regression", title: "Scope regression", start_date: "2026-11-04", end_date: "2026-11-05",
+          reason: "vacation", training_load: "full_deload"
+        }] } },
+        { name: "remove_planning_period", arguments: { period_id: "scope-regression" } }
+      ]) {
+        await assert.rejects(
+          () => client.callTool(tool),
+          /Authorization|401|Unauthorized|MCP|error/i,
+          `${tool.name} must require coach:write`
+        );
+      }
     } finally {
       await client.close();
     }

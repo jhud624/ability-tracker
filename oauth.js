@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { allowUnauthenticatedLocal } = require("./security");
 
 const BODY_LIMIT_BYTES = 128 * 1024;
 const SCOPES = ["coach:read", "coach:write"];
@@ -534,9 +535,9 @@ function sendMcpAuthChallenge(req, res, message = "Authorization required") {
 }
 
 function authorizeMcpRequest(req, res, requiredScopes = ["coach:read"]) {
-  const staticMcpToken = process.env.COACH_LOOP_MCP_TOKEN;
-  if (staticMcpToken && bearerToken(req) === staticMcpToken) return true;
-  if (!mcpOAuthRequired() && !staticMcpToken) return true;
+  const staticMcpToken = cleanSecret(process.env.COACH_LOOP_MCP_TOKEN);
+  if (staticMcpToken && safeStringEqual(bearerToken(req), staticMcpToken)) return true;
+  if (!mcpOAuthRequired() && !staticMcpToken && allowUnauthenticatedLocal(req)) return true;
 
   if (mcpOAuthRequired()) {
     try {
