@@ -4,16 +4,17 @@
   "private": true,
   "description": "Local-first workout coaching backend and web dashboard.",
   "scripts": {
+    "build": "node scripts/build-static.mjs",
     "mcp": "node mcp/coach-loop-mcp.mjs",
     "start": "node server.js",
     "test": "node --test"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@upstash/redis": "^1.38.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   }
 }

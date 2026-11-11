@@ -1,4 +1,5 @@
 const test = require('node:test');
+process.env.COACH_LOOP_ALLOW_UNAUTHENTICATED_LOCAL = "true";
 const assert = require('node:assert/strict');
 const { activeMemories, normalizeBlocks, validatePreferences, prescriptionKey, snapshotForecasts, timingObservation, estimateDuration } = require('../coaching');
 const activity = () => ({ activity_id: 'a', type: 'strength', date: '2026-09-07', title: 'Arms', target: { duration_minutes: 35 }, subtasks: [{ subtask_id: 'curl', title: 'Curl 3x12' }, { subtask_id: 'atg', title: 'ATG 2x5' }], blocks: [{ block_id: 'pair', mode: 'alternating_sets', primary_subtask_id: 'curl', active_rest_subtask_id: 'atg', rounds: 3, active_rest_between_rounds_only: true, additional_rest_seconds: 0 }], preference_applications: [{ key: 'active-rest', version: 2 }] });
