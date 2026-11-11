@@ -164,8 +164,7 @@ function formatDate(value, options = {}) {
 }
 
 function todayKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return localDateKey();
 }
 
 function dateKeyFromDate(date) {
@@ -1316,24 +1315,38 @@ function renderActivity(activity, options = {}) {
   return node;
 }
 
-function todaysList() {
-  const key = todayKey();
-  const todaysActivities = activities().filter((activity) => activity.date === key);
-  const overrideActivity = activities().find((activity) => activity.activity_id === state.todayOverrideActivityId);
-  const fallback = activities().find((activity) => !activity.completion?.completed);
-  return overrideActivity ? [overrideActivity] : todaysActivities.length ? todaysActivities : fallback ? [fallback] : [];
+function todaysView(key = todayKey()) {
+  return selectTodaysView({ activities: activities(), todayKey: key, overrideActivityId: state.todayOverrideActivityId });
 }
+
+function todaysList() {
+  return todaysView().activities;
+}
+
+let lastRenderedTodayDateKey = null;
 
 function renderToday() {
   const key = todayKey();
-  const list = todaysList();
+  const view = todaysView(key);
+  const list = view.activities;
+  lastRenderedTodayDateKey = key;
 
   elements.todayList.innerHTML = "";
   renderTodaySwitcher();
   if (!list.length) {
-    elements.todayList.innerHTML = `<div class="empty-state">No activities are scheduled yet. Import a weekly plan to get started.</div>`;
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = todayEmptyCopy(view.mode);
+    elements.todayList.append(empty);
     elements.completeWorkout.hidden = true;
     return;
+  }
+  const notice = todayFallbackNotice({ mode: view.mode, activity: list[0], formatDate });
+  if (notice) {
+    const line = document.createElement("p");
+    line.className = "today-fallback-notice";
+    line.textContent = notice;
+    elements.todayList.append(line);
   }
   list.forEach((activity) => elements.todayList.append(renderActivity(activity, { loggedDate: key })));
 
@@ -2645,7 +2658,10 @@ async function requestWakeLock() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") requestWakeLock();
+  if (document.visibilityState === "visible") {
+    requestWakeLock();
+    if (lastRenderedTodayDateKey && shouldRerenderForNewDate(lastRenderedTodayDateKey)) renderToday();
+  }
 });
 window.addEventListener("pointerdown", () => {
   if (!screenWakeLock || screenWakeLock.released) requestWakeLock();
