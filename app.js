@@ -2,7 +2,9 @@ const state = {
   data: null,
   activeView: "today-view",
   todayOverrideActivityId: null,
-  writeAccess: false
+  writeAccess: false,
+  notice: "",
+  noticeError: false
 };
 
 const elements = {
@@ -73,6 +75,20 @@ const elements = {
   unlockCancel: document.querySelector("#unlock-cancel"),
   message: document.querySelector("#message")
 };
+
+const clientSync = CoachClientSync.createClientSync({
+  send: sendApi,
+  onChange(client) {
+    if (state.saveSequence !== client.saveSequence) {
+      state.saveSequence = client.saveSequence;
+      state.notice = "";
+      state.noticeError = false;
+    }
+    state.data = client.data;
+    elements.coachSummary.value = client.summary?.summary_text || "";
+    renderMessage();
+  }
+});
 
 let unlockResolver = null;
 const EXERCISE_DRAFT_PREFIX = "coach_loop_exercise_log_draft:";
@@ -241,13 +257,24 @@ async function lockWriteAccess(message = "Saves locked.", isError = false) {
 }
 
 async function api(path, options = {}) {
+  const value = await clientSync.request(path, options);
+  if (options.method && !["GET", "HEAD"].includes(options.method.toUpperCase()) && value && (!clientSync.state.data || clientSync.state.needsReconcile)) {
+    await clientSync.request("/api/state");
+  }
+  return value;
+}
+
+async function sendApi(path, options = {}, context = {}) {
   const { headers = {}, retryAuth = true, ...fetchOptions } = options;
   const method = String(fetchOptions.method || "GET").toUpperCase();
   const isWrite = !["GET", "HEAD"].includes(method);
+  if (isWrite) context.assertCurrent?.();
   if (isWrite && !state.writeAccess) {
     const unlocked = await requestWriteAccess();
+    context.assertCurrent?.();
     if (!unlocked) throw new Error("Saves are locked.");
   }
+  if (isWrite) context.assertCurrent?.(); // Last guard immediately before first send.
   const response = await fetch(path, {
     ...fetchOptions,
     credentials: "same-origin",
@@ -258,29 +285,59 @@ async function api(path, options = {}) {
   });
   const payload = await response.json();
   if (response.status === 401 && path !== "/api/session" && retryAuth !== false) {
+    if (context.isCurrent && !context.isCurrent()) throw new Error("Obsolete authorization response ignored.");
     state.writeAccess = false;
     updateWriteAccessUi();
     setMessage(isWrite ? "Your save session expired. Unlock saves and retry." : "Unlock Coach Loop to view your data.", true);
     const unlocked = await requestWriteAccess();
-    if (unlocked) {
-      return api(path, { ...options, retryAuth: false });
+    if (unlocked && !isWrite) {
+      if (context.isCurrent && !context.isCurrent()) throw new Error("Obsolete authorization response ignored.");
+      return sendApi(path, { ...options, retryAuth: false }, context);
     }
+    if (isWrite) throw new Error("The save was not authorized. Verify saved state before trying again.");
   }
   if (!response.ok) throw new Error(payload.error || "Request failed");
-  if (isWrite) state.storageWarning = (payload.storage_warnings || []).join(" ");
   return payload;
 }
 
+function renderMessage() {
+  const client = clientSync.state;
+  const save = client.pendingWrites ? "Saving…"
+    : client.saveStatus === "saved" ? "Saved."
+      : client.saveStatus === "unconfirmed" ? `Save outcome unconfirmed: ${client.writeError}`
+        : client.saveStatus === "blocked" ? client.writeError : "";
+  const backup = client.backupWarning
+    ? (client.saveStatus === "unconfirmed" ? "Earlier saved changes: backup unverified." : "Saved changes: backup unverified.") : "";
+  elements.message.textContent = [state.notice || save, backup, client.recoveryWarning, client.intentNotice,
+    client.refreshErrors.state ? `State refresh failed: ${client.refreshErrors.state}` : "",
+    client.refreshErrors.summary ? `Summary refresh failed: ${client.refreshErrors.summary}` : "",
+    client.refreshErrors.display ? `Display refresh failed: ${client.refreshErrors.display}` : ""
+  ].filter(Boolean).join(" ");
+  elements.message.classList.toggle("is-error", Boolean(state.noticeError || client.writeError || client.recoveryRequired || Object.keys(client.refreshErrors).length));
+  elements.message.classList.toggle("is-warning", Boolean(backup));
+}
+
 function setMessage(message, isError = false) {
-  elements.message.textContent = [message, state.storageWarning].filter(Boolean).join(" ");
-  elements.message.classList.toggle("is-error", isError);
-  if (message) {
-    window.clearTimeout(setMessage.timer);
-    setMessage.timer = window.setTimeout(() => {
-      elements.message.textContent = "";
-      elements.message.classList.remove("is-error");
-    }, state.storageWarning ? 15000 : 4500);
+  if (isError && message === clientSync.state.writeError) {
+    state.notice = "";
+    state.noticeError = false;
+    renderMessage();
+    return;
   }
+  state.notice = message;
+  state.noticeError = isError;
+  renderMessage();
+  window.clearTimeout(setMessage.timer);
+  if (message) setMessage.timer = window.setTimeout(() => {
+    state.notice = "";
+    state.noticeError = false;
+    renderMessage(); // Backup and refresh outcomes do not expire with a toast.
+  }, 4500);
+}
+
+function reportDisplayError(error) {
+  clientSync.state.refreshErrors.display = error.message || "Unable to redraw saved state.";
+  renderMessage();
 }
 
 function setBackendStatus(connected) {
@@ -804,8 +861,12 @@ function exerciseLogHasData(payload) {
 }
 
 function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog = {}) {
+  const controlIntent = clientSync.captureIntent();
   let timer = null;
   const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
+  // A persisted draft has no trustworthy capture generation. Display/preserve
+  // it, but require a new edit or explicit Save before automatic submission.
+  let draftReviewed = !draft;
   const hasSavedLog = Object.keys(savedLog || {}).length > 0;
   // A newly rendered empty row has a title even when the user has not entered
   // anything. Use that pristine payload as the baseline so visibility/pagehide
@@ -814,6 +875,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   let lastSaved = exerciseLogSignature(!hasSavedLog && !draft ? controls.payload() : savedLog);
 
   function completeRowSubtask() {
+    if (!controlIntent.isCurrent()) return;
     const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');
     if (!checkbox || checkbox.checked) return;
     checkbox.checked = true;
@@ -823,6 +885,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   let autoCompletePoll = null;
 
   function queueAutoComplete() {
+    if (!controlIntent.isCurrent()) return;
     const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');
     if (!checkbox || checkbox.checked) return;
     // Completing triggers a save + re-render; wait until focus leaves the
@@ -834,7 +897,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     if (autoCompletePoll) return;
     autoCompletePoll = window.setInterval(() => {
       const box = row.querySelector('input[type="checkbox"][data-subtask-id]');
-      if (!row.isConnected || !box || box.checked) {
+      if (!controlIntent.isCurrent() || !row.isConnected || !box || box.checked) {
         window.clearInterval(autoCompletePoll);
         autoCompletePoll = null;
         return;
@@ -847,23 +910,29 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     }, 700);
   }
 
-  async function flushAutosave() {
+  async function flushAutosave({ explicit = false } = {}) {
+    if (!controlIntent.isCurrent() || (!draftReviewed && !explicit)) return;
     const payload = controls.payload();
     const signature = exerciseLogSignature(payload);
     if (signature === lastSaved) return;
     setAutosaveStatus(controls.status, "Saving...", "is-saving");
     try {
-      await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false });
+      await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false, coalesce: !explicit, intent: controlIntent });
+      if (!controlIntent.isCurrent()) return;
       lastSaved = signature;
       clearExerciseDraft(activity.activity_id, payload.exercise_id);
       setAutosaveStatus(controls.status, "Saved", "is-saved");
-      if (exerciseLogHasData(payload)) queueAutoComplete();
+      try {
+        if (exerciseLogHasData(payload)) queueAutoComplete();
+      } catch (error) { reportDisplayError(error); }
     } catch (error) {
-      setAutosaveStatus(controls.status, "Not saved", "is-error");
+      setAutosaveStatus(controls.status, error.notSent ? "Not sent; review current state" : "Save unconfirmed", "is-error");
     }
   }
 
   function saveDraftAndUpdate() {
+    if (!controlIntent.isCurrent()) return;
+    draftReviewed = true;
     writeExerciseDraft(activity.activity_id, controls.payload());
     controls.updateTotal();
   }
@@ -873,9 +942,9 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     timer = window.setTimeout(flushAutosave, delay);
   }
 
-  async function flushNow() {
+  async function flushNow(options) {
     window.clearTimeout(timer);
-    await flushAutosave();
+    await flushAutosave(options);
   }
 
   activeAutosaveFlushers.add(flushNow);
@@ -884,20 +953,23 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       saveDraftAndUpdate();
       scheduleAutosave();
     });
-    input.addEventListener("change", () => scheduleAutosave(0));
+    input.addEventListener("change", () => { saveDraftAndUpdate(); scheduleAutosave(0); });
     input.addEventListener("blur", () => scheduleAutosave(0));
   });
 
   controls.swap.addEventListener("change", () => {
+    if (!controlIntent.isCurrent()) return;
     // Swapping to an alternative movement can change which fields apply
     // (e.g. curl -> weighted carry), so rebuild this row's controls from the
     // draft before flushing — the flush clears the draft on success.
     saveDraftAndUpdate();
     window.setTimeout(async () => {
+      if (!controlIntent.isCurrent()) return;
       activeAutosaveFlushers.delete(flushNow);
       controls.elements.forEach((el) => el.remove());
       const rebuilt = appendExerciseLogControls(row, activity, exercise);
       await flushNow();
+      if (!controlIntent.isCurrent()) return;
       rebuilt.status.textContent = controls.status.textContent;
       rebuilt.status.className = controls.status.className;
     }, 0);
@@ -905,11 +977,12 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
 
   row.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await flushNow();
+    await flushNow({ explicit: true });
   });
 }
 
 function attachFeedbackAutosave(form, activity) {
+  const controlIntent = clientSync.captureIntent();
   const button = form.querySelector("button");
   const status = document.createElement("span");
   setAutosaveStatus(status, "Autosaves");
@@ -923,19 +996,23 @@ function attachFeedbackAutosave(form, activity) {
   let timer = null;
   let lastSaved = feedbackSignature(payload());
 
-  async function flushAutosave() {
+  async function flushAutosave({ explicit = false } = {}) {
+    if (!controlIntent.isCurrent()) return;
     const currentPayload = payload();
     const signature = feedbackSignature(currentPayload);
     if (signature === lastSaved) return;
     setAutosaveStatus(status, "Saving...", "is-saving");
     try {
-      await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false });
+      await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false, coalesce: !explicit, intent: controlIntent });
+      if (!controlIntent.isCurrent()) return;
       lastSaved = signature;
-      const fresh = activities().find(a => a.activity_id === activity.activity_id);
-      if (fresh) renderCoachingDetails(fresh, form.closest("article"));
       setAutosaveStatus(status, "Saved", "is-saved");
-    } catch {
-      setAutosaveStatus(status, "Not saved", "is-error");
+      try {
+        const fresh = activities().find(a => a.activity_id === activity.activity_id);
+        if (fresh) renderCoachingDetails(fresh, form.closest("article"));
+      } catch (error) { reportDisplayError(error); }
+    } catch (error) {
+      setAutosaveStatus(status, error.notSent ? "Not sent; review current state" : "Save unconfirmed", "is-error");
     }
   }
 
@@ -944,9 +1021,9 @@ function attachFeedbackAutosave(form, activity) {
     timer = window.setTimeout(flushAutosave, delay);
   }
 
-  async function flushNow() {
+  async function flushNow(options) {
     window.clearTimeout(timer);
-    await flushAutosave();
+    await flushAutosave(options);
   }
 
   activeAutosaveFlushers.add(flushNow);
@@ -960,7 +1037,7 @@ function attachFeedbackAutosave(form, activity) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await flushNow();
+    await flushNow({ explicit: true });
   });
 }
 
@@ -1044,7 +1121,7 @@ function renderExerciseLogs(activity, container) {
     row.append(title, ...controls.elements);
     container.append(row);
     controls.updateTotal();
-    if (draft) setAutosaveStatus(controls.status, "Draft", "is-saving");
+    if (draft) setAutosaveStatus(controls.status, "Draft; edit to save", "is-saving");
   });
 }
 
@@ -1059,7 +1136,7 @@ function appendExerciseLogControls(row, activity, exercise) {
   attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);
   row.append(...controls.elements);
   controls.updateTotal();
-  if (draft) setAutosaveStatus(controls.status, "Draft", "is-saving");
+  if (draft) setAutosaveStatus(controls.status, "Draft; edit to save", "is-saving");
   return controls;
 }
 
@@ -1301,21 +1378,21 @@ function renderActivity(activity, options = {}) {
   attachFeedbackAutosave(form, activity);
 
   checkButton.addEventListener("click", async () => {
-    await flushActiveAutosaves();
+    const previous = checkButton.dataset.pendingCompleted === undefined
+      ? completed : checkButton.dataset.pendingCompleted === "true";
+    const next = !previous;
+    checkButton.dataset.pendingCompleted = String(next);
     await updateActivity(activity.activity_id, {
-      completed: !completed,
-      logged_date: !completed ? options.loggedDate : null
+      completed: next,
+      logged_date: next ? options.loggedDate : null
     });
   });
 
   subtaskList.addEventListener("change", async (event) => {
     const checkbox = event.target.closest("[data-subtask-id]");
     if (!checkbox) return;
-    await flushActiveAutosaves();
-    await updateActivity(activity.activity_id, {
-      subtask_id: checkbox.dataset.subtaskId,
-      completed: checkbox.checked
-    });
+    const intent = { subtask_id: checkbox.dataset.subtaskId, completed: checkbox.checked };
+    await updateActivity(activity.activity_id, intent);
   });
 
   return node;
@@ -2130,7 +2207,7 @@ function editPlanningPeriod(period) {
 async function removePlanningPeriod(period) {
   if (!window.confirm(`Remove ${period.title}?`)) return;
   try {
-    state.data = await api(`/api/planning-periods/${encodeURIComponent(period.period_id)}`, { method: "DELETE" });
+    await api(`/api/planning-periods/${encodeURIComponent(period.period_id)}`, { method: "DELETE" });
     render();
     await refreshCoachSummary();
     setMessage("Planning period removed.");
@@ -2206,8 +2283,7 @@ function editCoachMemory(memory) {
 async function removeCoachMemory(memory) {
   if (!window.confirm(`Forget “${memory.text}”?`)) return;
   try {
-    const response = await api(`/api/coach-memories/${encodeURIComponent(memory.memory_id)}`, { method: "DELETE" });
-    state.data.coach_memories = response.coach_memories;
+    await api(`/api/coach-memories/${encodeURIComponent(memory.memory_id)}`, { method: "DELETE" });
     renderCoachMemories();
     await refreshCoachSummary();
     setMessage("Memory removed.");
@@ -2279,53 +2355,67 @@ function renderCoachMemories() {
 }
 
 function render() {
-  activeAutosaveFlushers.clear();
-  updateOverview();
-  renderToday();
-  renderWeek();
-  renderLibrary();
-  renderGoals();
-  renderCoachMemories();
-  renderPlanningPeriods();
-  renderGear();
-  renderActuals();
-  renderRunTracking();
+  if (!state.data || clientSync.state.pendingWrites || clientSync.state.pendingCurrentIntents) return;
+  try {
+    activeAutosaveFlushers.clear();
+    updateOverview();
+    renderToday();
+    renderWeek();
+    renderLibrary();
+    renderGoals();
+    renderCoachMemories();
+    renderPlanningPeriods();
+    renderGear();
+    renderActuals();
+    renderRunTracking();
+    delete clientSync.state.refreshErrors.display;
+  } catch (error) {
+    clientSync.state.refreshErrors.display = error.message || "Unable to redraw saved state.";
+  }
+  renderMessage();
 }
 
-async function loadState() {
-  try {
-    state.data = await api("/api/state");
-    setBackendStatus(true);
-    render();
-    await refreshCoachSummary();
-  } catch (error) {
-    setBackendStatus(false);
-    setMessage(error.message, true);
+async function loadState({ resync = false } = {}) {
+  const loaded = await api("/api/state", { resync });
+  if (!loaded) {
+    if (clientSync.state.refreshErrors.state) setBackendStatus(false);
+    return;
   }
+  setBackendStatus(true);
+  render();
+  await refreshCoachSummary();
 }
 
-async function updateActivity(activityId, payload) {
-  try {
-    state.data = await api(`/api/activities/${encodeURIComponent(activityId)}`, {
-      method: "PATCH",
-      body: JSON.stringify(payload)
-    });
-    render();
-    await refreshCoachSummary();
-  } catch (error) {
-    setMessage(error.message, true);
-    await loadState();
-  }
+async function updateActivity(activityId, payload, { intent = clientSync.captureIntent() } = {}) {
+  const body = JSON.stringify(payload); // Capture each tap before any await.
+  await clientSync.activityIntent(async (intent) => {
+    if (!intent.isCurrent()) return;
+    await flushActiveAutosaves();
+    if (!intent.isCurrent()) return;
+    try {
+      await api(`/api/activities/${encodeURIComponent(activityId)}`, { method: "PATCH", body, intent });
+    } catch (error) {
+      if (!intent.isCurrent() || error.cancelledIntent) return;
+      // Reads may verify a lost acknowledgement. They never replay this write.
+      await loadState();
+    }
+  }, intent);
+  render();
+  await refreshCoachSummary();
 }
 
 async function saveFeedback(activityId, payload, options = {}) {
-  const { silent = false, rerender = true } = options;
+  const { silent = false, rerender = true, coalesce = silent && !rerender, intent } = options;
   try {
-    state.data = await api(`/api/activities/${encodeURIComponent(activityId)}/feedback`, {
+    await api(`/api/activities/${encodeURIComponent(activityId)}/feedback`, {
       method: "POST",
+      coalesce,
+      intent,
+      autosaveKey: JSON.stringify(["feedback", activityId]),
       body: JSON.stringify(payload)
     });
-    if (rerender) render();
+    // A restore or recovery boundary (e.g. lost-ack / recoveryRequired) cancels the old controls; rebuild them with fresh guards.
+    if (rerender || (intent && !intent.isCurrent())) render();
     const summaryPromise = refreshCoachSummary();
     if (rerender) {
       await summaryPromise;
@@ -2340,13 +2430,17 @@ async function saveFeedback(activityId, payload, options = {}) {
 }
 
 async function saveExerciseLog(activityId, payload, options = {}) {
-  const { silent = false, rerender = true } = options;
+  const { silent = false, rerender = true, coalesce = silent && !rerender, intent } = options;
   try {
-    state.data = await api(`/api/activities/${encodeURIComponent(activityId)}/exercise-log`, {
+    await api(`/api/activities/${encodeURIComponent(activityId)}/exercise-log`, {
       method: "POST",
+      coalesce,
+      intent,
+      autosaveKey: JSON.stringify(["exercise-log", activityId, payload.exercise_id]),
       body: JSON.stringify(payload)
     });
-    if (rerender) render();
+    // A restore or recovery boundary (e.g. lost-ack / recoveryRequired) cancels the old controls; rebuild them with fresh guards.
+    if (rerender || (intent && !intent.isCurrent())) render();
     const summaryPromise = refreshCoachSummary();
     if (rerender) {
       await summaryPromise;
@@ -2362,7 +2456,7 @@ async function saveExerciseLog(activityId, payload, options = {}) {
 
 async function linkActivityActual(activityId, actualId) {
   try {
-    state.data = await api(`/api/activities/${encodeURIComponent(activityId)}/actual-link`, {
+    await api(`/api/activities/${encodeURIComponent(activityId)}/actual-link`, {
       method: "POST",
       body: JSON.stringify({ actual_id: actualId || null })
     });
@@ -2381,9 +2475,7 @@ function parseTextareaJson(textarea) {
 }
 
 async function refreshCoachSummary() {
-  const summary = await api("/api/coach-summary");
-  elements.coachSummary.value = summary.summary_text;
-  return summary;
+  return api("/api/coach-summary");
 }
 
 elements.tabButtons.forEach((button) => {
@@ -2394,17 +2486,25 @@ elements.tabButtons.forEach((button) => {
   });
 });
 
-elements.refreshButton.addEventListener("click", loadState);
+elements.refreshButton.addEventListener("click", () => loadState({ resync: true }));
 
 elements.completeWorkout.addEventListener("click", async () => {
-  const pending = todaysList().filter((activity) => !activity.completion?.completed);
-  if (!pending.length) return;
+  const intent = clientSync.captureIntent(); // One click, one generation, across every wait.
+  const pendingIds = todaysList().filter((activity) => !activity.completion?.completed).map(activity => activity.activity_id);
+  const loggedDate = todayKey();
+  if (!pendingIds.length) return;
+  function current() {
+    if (intent.isCurrent()) return true;
+    setMessage("Remaining bulk completion edits were canceled after recovery. Review displayed state before making a new edit.");
+    return false;
+  }
+  if (!current()) return;
   await flushActiveAutosaves();
-  for (const activity of pending) {
-    await updateActivity(activity.activity_id, {
-      completed: true,
-      logged_date: todayKey()
-    });
+  if (!current()) return;
+  for (const activityId of pendingIds) {
+    if (!current()) return;
+    await updateActivity(activityId, { completed: true, logged_date: loggedDate }, { intent });
+    if (!current()) return;
   }
 });
 
@@ -2466,7 +2566,7 @@ elements.planImportForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const payload = parseTextareaJson(elements.planJson);
-    state.data = await api("/api/plans/import", {
+    await api("/api/plans/import", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -2492,7 +2592,7 @@ elements.goalsForm.addEventListener("submit", async (event) => {
       back_health: elements.goalBackHealth.value.trim(),
       recovery: elements.goalRecovery.value.trim()
     };
-    state.data = await api("/api/goals", {
+    await api("/api/goals", {
       method: "PUT",
       body: JSON.stringify({ goals })
     });
@@ -2516,7 +2616,7 @@ elements.planningPeriodForm.addEventListener("submit", async (event) => {
       training_load: elements.planningPeriodLoad.value,
       notes: elements.planningPeriodNotes.value.trim()
     };
-    state.data = await api("/api/planning-periods/upsert", {
+    await api("/api/planning-periods/upsert", {
       method: "POST",
       body: JSON.stringify({ planning_periods: [period] })
     });
@@ -2534,7 +2634,7 @@ elements.planningPeriodCancel.addEventListener("click", resetPlanningPeriodForm)
 elements.coachNotesForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    state.data = await api("/api/coach-notes", {
+    await api("/api/coach-notes", {
       method: "PUT",
       body: JSON.stringify({ coach_notes: elements.coachNotes.value })
     });
@@ -2560,11 +2660,10 @@ elements.coachMemoryForm.addEventListener("submit", async (event) => {
       effective_from: document.querySelector("#coach-memory-from").value || null,
       expires_at: document.querySelector("#coach-memory-expires").value || null
     };
-    const response = await api("/api/coach-memories/upsert", {
+    await api("/api/coach-memories/upsert", {
       method: "POST",
       body: JSON.stringify({ coach_memories: [coachMemory] })
     });
-    state.data.coach_memories = response.coach_memories;
     resetCoachMemoryForm();
     renderCoachMemories();
     await refreshCoachSummary();
@@ -2580,7 +2679,7 @@ elements.actualsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const payload = parseTextareaJson(elements.actualsJson);
-    state.data = await api("/api/health/import", {
+    await api("/api/health/import", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -2604,7 +2703,7 @@ elements.gearForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const payload = parseTextareaJson(elements.gearJson);
-    state.data = await api("/api/gear/upsert", {
+    await api("/api/gear/upsert", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -2620,6 +2719,7 @@ elements.gearForm.addEventListener("submit", async (event) => {
 elements.copySummaryButton.addEventListener("click", async () => {
   try {
     const summary = await refreshCoachSummary();
+    if (!summary) throw new Error("The summary is not current. Refresh saved state before copying it.");
     await navigator.clipboard.writeText(summary.summary_text);
     setMessage("Coach summary copied.");
   } catch (error) {

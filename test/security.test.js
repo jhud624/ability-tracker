@@ -124,7 +124,7 @@ test("static serving allows only named assets and rejects private paths and trav
   const root = environment(t);
   const web = path.join(root, "web");
   fs.mkdirSync(web);
-  for (const name of ["index.html", "app.js", "styles.css", ".env", "server.js", "package.json"]) {
+  for (const name of ["index.html", "app.js", "client-sync.js", "styles.css", ".env", "server.js", "package.json"]) {
     fs.writeFileSync(path.join(web, name), `fixture ${name}`);
   }
   fs.mkdirSync(path.join(web, "data"));
@@ -132,7 +132,7 @@ test("static serving allows only named assets and rejects private paths and trav
   fs.mkdirSync(`${web}-sibling`);
   fs.writeFileSync(path.join(`${web}-sibling`, "canary.txt"), "sibling fixture");
   const handler = createStaticHandler(web);
-  for (const pathname of ["/", "/index.html", "/app.js", "/styles.css"]) {
+  for (const pathname of ["/", "/index.html", "/app.js", "/client-sync.js", "/styles.css"]) {
     const response = await request(handler, { pathname });
     assert.equal(response.status, 200);
     assert.equal(response.headers["x-content-type-options"], "nosniff");

@@ -1438,6 +1438,7 @@ code {
 }
 
 .message:empty { display: none; }
+.message.is-warning { background: var(--yellow); }
 .message.is-error { background: var(--danger); }
 
 .modal-backdrop {
