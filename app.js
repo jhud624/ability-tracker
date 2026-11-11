@@ -2414,7 +2414,8 @@ async function saveFeedback(activityId, payload, options = {}) {
       autosaveKey: JSON.stringify(["feedback", activityId]),
       body: JSON.stringify(payload)
     });
-    if (rerender) render();
+    // A restore cancels the old controls; rebuild them with fresh guards.
+    if (rerender || (intent && !intent.isCurrent())) render();
     const summaryPromise = refreshCoachSummary();
     if (rerender) {
       await summaryPromise;
@@ -2438,7 +2439,8 @@ async function saveExerciseLog(activityId, payload, options = {}) {
       autosaveKey: JSON.stringify(["exercise-log", activityId, payload.exercise_id]),
       body: JSON.stringify(payload)
     });
-    if (rerender) render();
+    // A restore cancels the old controls; rebuild them with fresh guards.
+    if (rerender || (intent && !intent.isCurrent())) render();
     const summaryPromise = refreshCoachSummary();
     if (rerender) {
       await summaryPromise;

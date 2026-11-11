@@ -627,6 +627,57 @@ test("browser transport rechecks a captured intent after asynchronous unlock and
   assert.equal(writes, 0);
 });
 
+test("browser: silent restore-boundary autosaves rebuild controls without reviving canceled edits", async () => {
+  for (const kind of ["feedback", "exercise"]) {
+    const sent = [];
+    let result = snapshot(10);
+    const app = browser(async (path, options = {}) => {
+      if (options.method === "POST") {
+        sent.push(JSON.parse(options.body));
+        result = snapshot(sent.length + 1, { restored_at: "2026-11-04T10:00:00.000Z" });
+        return response(result);
+      }
+      return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" });
+    });
+    await app.run("loadState()");
+    if (kind === "exercise") {
+      app.installExerciseAutosave();
+      app.context.readExerciseDraft = () => null;
+      app.context.clearExerciseDraft = () => {};
+    }
+    let payload;
+    function attachControl() {
+      payload = kind === "feedback" ? { notes: "accepted snapshot" } : { exercise_id: "A", reps: 1 };
+      app.context.form = { values: payload, elements: {}, querySelector: () => null, addEventListener() {}, closest: () => ({}) };
+      if (kind === "feedback") {
+        app.run('attachFeedbackAutosave(form, {activity_id:"synthetic"})');
+      } else {
+        app.context.row = { addEventListener() {}, querySelector: () => null, isConnected: true };
+        const capturedPayload = payload;
+        app.context.controls = { payload: () => ({ ...capturedPayload }), status: {}, inputs: [], elements: [], updateTotal() {}, swap: { addEventListener() {} } };
+        app.run('attachExerciseLogAutosave(row, {activity_id:"synthetic"}, {exercise_id:"A"}, controls)');
+      }
+    }
+    attachControl();
+    const oldFlush = [...app.context.activeAutosaveFlushers][0];
+    const oldPayload = payload;
+    app.context.renderToday = attachControl;
+    const before = app.rendered.length;
+    oldPayload[kind === "feedback" ? "notes" : "reps"] = kind === "feedback" ? "before restore" : 2;
+    await oldFlush();
+    assert.equal(app.rendered.length, before + 1, `${kind}: silent save redraws accepted restore snapshot`);
+    assert.equal(app.rendered.at(-1).restored_at, result.restored_at);
+    oldPayload[kind === "feedback" ? "notes" : "reps"] = kind === "feedback" ? "canceled edit" : 3;
+    await oldFlush();
+    assert.equal(sent.length, 1, `${kind}: old control stays canceled`);
+    payload[kind === "feedback" ? "notes" : "reps"] = kind === "feedback" ? "new edit" : 4;
+    await app.run("flushActiveAutosaves()");
+    assert.equal(sent.length, 2, `${kind}: rebuilt control can save a new edit`);
+    assert.equal(sent[1][kind === "feedback" ? "notes" : "reps"], kind === "feedback" ? "new edit" : 4);
+    assert.equal(app.rendered.length, before + 1, `${kind}: same-generation silent save does not redraw`);
+  }
+});
+
 test("browser: detached pre-recovery feedback control cannot silently recapture its old payload after resync", async () => {
   let result = snapshot(2, { restored_at: "2026-11-04T10:00:00.000Z" }); let writes = 0;
   const app = browser(async (path, options = {}) => { if (options.method) writes++; return response(path === "/api/state" ? result : { revision: result.revision, restored_at: result.restored_at, summary_text: "current" }); });
