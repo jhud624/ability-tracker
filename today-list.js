@@ -1,11 +1,16 @@
 // Pure presentation helpers for the Today card.
+function compareActivitiesByDateThenTitle(a, b) {
+  return String(a?.date ?? "").localeCompare(String(b?.date ?? ""))
+    || String(a?.title ?? "").localeCompare(String(b?.title ?? ""));
+}
+
 function selectTodaysView({ activities, todayKey, overrideActivityId }) {
   const override = activities.find((activity) => activity.activity_id === overrideActivityId);
   if (override) return { mode: "override", activities: [override] };
   const scheduled = activities.filter((activity) => activity.date === todayKey);
   if (scheduled.length) return { mode: "scheduled", activities: scheduled };
   const unfinished = activities.filter((activity) => !activity.completion?.completed)
-    .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
+    .sort(compareActivitiesByDateThenTitle);
   if (unfinished.length) return { mode: "fallback", activities: [unfinished[0]] };
   return { mode: activities.length ? "all-complete" : "empty", activities: [] };
 }
@@ -31,5 +36,5 @@ function shouldRerenderForNewDate(lastRenderedDateKey, now = new Date()) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { selectTodaysView, todayFallbackNotice, todayEmptyCopy, localDateKey, shouldRerenderForNewDate };
+  module.exports = { compareActivitiesByDateThenTitle, selectTodaysView, todayFallbackNotice, todayEmptyCopy, localDateKey, shouldRerenderForNewDate };
 }

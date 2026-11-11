@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { selectTodaysView, todayFallbackNotice, todayEmptyCopy, localDateKey, shouldRerenderForNewDate } = require("../today-list");
+const { compareActivitiesByDateThenTitle, selectTodaysView, todayFallbackNotice, todayEmptyCopy, localDateKey, shouldRerenderForNewDate } = require("../today-list");
 
 const workout = (id, date, title = id, completed = false) => ({ activity_id: id, date, title, completion: { completed } });
 const select = (activities, overrideActivityId, todayKey = "2026-11-02") => selectTodaysView({ activities, todayKey, overrideActivityId });
@@ -20,6 +20,13 @@ test("fallback sorts by date then title without mutating array order", () => {
   const input = [later, workout("tie", "2026-11-01", "Z workout"), earlier];
   assert.deepEqual(select(input).activities, [earlier]);
   assert.equal(input[0], later);
+});
+
+test("date-then-title sort tolerates missing date or title", () => {
+  const missing = { activity_id: "missing", completion: { completed: false } };
+  const titled = workout("titled", "2026-11-04", "Titled");
+  assert.doesNotThrow(() => compareActivitiesByDateThenTitle(missing, titled));
+  assert.deepEqual(select([titled, missing]).activities, [missing]);
 });
 
 test("empty and all-complete views have honest copy and no notice", () => {
@@ -70,6 +77,17 @@ test("local dates and visibility refresh cross midnight, not UTC midnight", () =
     assert.equal(select([yesterday], null, localDateKey(evening)).mode, "scheduled");
     assert.equal(select([yesterday], null, localDateKey(midnight)).mode, "fallback");
     assert.equal(select([workout("done", "2026-11-03", "Done", true)], null, localDateKey(midnight)).mode, "all-complete");
+    // 2026-11-01 is the America/New_York fall-back day (25-hour local day).
+    const beforeFallback = new Date("2026-11-01T00:30:00-04:00");
+    const afterFallback = new Date("2026-11-01T01:30:00-05:00");
+    const endOfFallbackDay = new Date("2026-11-01T23:30:00-05:00");
+    assert.equal(localDateKey(beforeFallback), "2026-11-01");
+    assert.equal(localDateKey(afterFallback), "2026-11-01");
+    assert.equal(localDateKey(endOfFallbackDay), "2026-11-01");
+    assert.equal(shouldRerenderForNewDate("2026-11-01", endOfFallbackDay), false);
+    const dayAfterFallback = new Date("2026-11-02T00:01:00-05:00");
+    assert.equal(localDateKey(dayAfterFallback), "2026-11-02");
+    assert.equal(shouldRerenderForNewDate("2026-11-01", dayAfterFallback), true);
   } finally {
     if (previousTZ === undefined) delete process.env.TZ;
     else process.env.TZ = previousTZ;

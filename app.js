@@ -1361,7 +1361,7 @@ function renderTodaySwitcher() {
   const key = todayKey();
   const switchableActivities = activities()
     .filter((activity) => !activity.completion?.completed && activity.date !== key)
-    .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
+    .sort(compareActivitiesByDateThenTitle);
 
   elements.todaySwitchSelect.innerHTML = "";
   const placeholder = document.createElement("option");
@@ -2657,10 +2657,16 @@ async function requestWakeLock() {
   }
 }
 
+async function rerenderIfDateChanged() {
+  if (!lastRenderedTodayDateKey || !shouldRerenderForNewDate(lastRenderedTodayDateKey)) return;
+  await flushActiveAutosaves();
+  render();
+}
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     requestWakeLock();
-    if (lastRenderedTodayDateKey && shouldRerenderForNewDate(lastRenderedTodayDateKey)) renderToday();
+    void rerenderIfDateChanged();
   }
 });
 window.addEventListener("pointerdown", () => {
