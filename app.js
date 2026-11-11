@@ -2657,10 +2657,89 @@ async function requestWakeLock() {
   }
 }
 
+function isPreservedFormControl(control) {
+  const type = String(control.getAttribute("type") || control.type || "").toLowerCase();
+  return !["button", "submit", "reset", "image", "file"].includes(type);
+}
+
+function preservedControlIdentity(control) {
+  const card = control.closest("[data-activity-id]");
+  const row = control.closest(".subtask-row, .feedback-grid, .actual-link-form");
+  const subtaskId = control.dataset.subtaskId
+    || row?.querySelector("[data-subtask-id]")?.dataset.subtaskId
+    || "";
+  return [
+    card?.dataset.activityId || "",
+    subtaskId,
+    control.getAttribute("name") || control.id || "",
+    String(control.getAttribute("type") || control.tagName || "").toLowerCase()
+  ].join("\u0000");
+}
+
+function snapshotPreservedControls(root) {
+  const records = [];
+  if (!root) return records;
+  const seen = new Map();
+  for (const control of root.querySelectorAll("input, textarea, select")) {
+    if (!isPreservedFormControl(control)) continue;
+    const base = preservedControlIdentity(control);
+    const index = seen.get(base) || 0;
+    seen.set(base, index + 1);
+    const checkable = control.type === "checkbox" || control.type === "radio";
+    records.push({
+      id: `${base}\u0000${index}`,
+      value: control.value,
+      checked: checkable ? control.checked : false,
+      checkable
+    });
+  }
+  return records;
+}
+
+function restorePreservedControls(root, records) {
+  if (!root || !records.length) return;
+  const seen = new Map();
+  const byId = new Map();
+  for (const control of root.querySelectorAll("input, textarea, select")) {
+    if (!isPreservedFormControl(control)) continue;
+    const base = preservedControlIdentity(control);
+    const index = seen.get(base) || 0;
+    seen.set(base, index + 1);
+    byId.set(`${base}\u0000${index}`, control);
+  }
+  for (const record of records) {
+    const control = byId.get(record.id);
+    if (!control) continue;
+    if (record.checkable) control.checked = record.checked;
+    else control.value = record.value;
+  }
+}
+
+// Goals, coach notes, and the other explicit-save forms are not date-dependent.
+// Rebuilding them from state.data would drop text the user has not submitted.
+// Today and Week have to be rebuilt so the date, fallback, and today marker
+// stay current; their in-progress values are copied back onto the new cards.
+function renderForNewLocalDate() {
+  const preserved = [
+    elements.todaySwitchForm,
+    elements.todayList,
+    elements.weekGrid
+  ].map((root) => ({ root, records: snapshotPreservedControls(root) }));
+  activeAutosaveFlushers.clear();
+  updateOverview();
+  renderToday();
+  renderWeek();
+  for (const entry of preserved) restorePreservedControls(entry.root, entry.records);
+  renderRunTracking();
+  renderCoachMemories();
+}
+
 async function rerenderIfDateChanged() {
   if (!lastRenderedTodayDateKey || !shouldRerenderForNewDate(lastRenderedTodayDateKey)) return;
+  // Workout feedback and exercise logs already autosave. Flush those timers
+  // before their cards are rebuilt. Do not write Goals or Coach Notes here.
   await flushActiveAutosaves();
-  render();
+  renderForNewLocalDate();
 }
 
 document.addEventListener("visibilitychange", () => {
