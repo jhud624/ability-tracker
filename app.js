@@ -331,19 +331,6 @@ function updateOverview() {
   elements.weightTotal.textContent = Math.round(weightMoved).toLocaleString();
 }
 
-function activityDescription(activity) {
-  const target = activity.target || {};
-  const pieces = [
-    target.distance_miles ? `${target.distance_miles} mi` : null,
-    target.distance_km ? `${target.distance_km} km` : null,
-    (target.estimated_duration_minutes || target.duration_minutes) ? `About ${target.estimated_duration_minutes || target.duration_minutes} min` : null,
-    target.time_budget_minutes ? `${target.time_budget_minutes} min available` : null,
-    target.intensity,
-    target.notes || activity.notes
-  ].filter(Boolean);
-  return pieces.join(" · ");
-}
-
 function youtubeSearchUrl(query) {
   return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${query} exercise form`)}`;
 }
@@ -1186,7 +1173,8 @@ function renderActivity(activity, options = {}) {
   const activityMain = node.querySelector(".activity-main");
   const checkButton = node.querySelector(".check-button");
   const title = node.querySelector("h3");
-  const description = node.querySelector("p");
+  const description = node.querySelector(".activity-summary");
+  const coachNotes = node.querySelector(".coach-notes");
   const meta = node.querySelector(".activity-meta");
   const equipmentTags = node.querySelector(".equipment-tags");
   const subtaskList = node.querySelector(".subtask-list");
@@ -1203,7 +1191,14 @@ function renderActivity(activity, options = {}) {
   const planningText = activity.excused_by_planning_period ? " · planned deload" : "";
   meta.textContent = `${formatDate(activity.date)} · ${activity.type} · ${activity.required_or_optional}${planningText}${loggedText}`;
   title.textContent = activity.title;
-  description.textContent = activityDescription(activity);
+  const cardText = activityCardText(activity);
+  description.textContent = cardText.summary;
+  description.hidden = !cardText.summary;
+  if (cardText.notes.length) {
+    coachNotes.querySelector(".coach-notes-body").textContent = cardText.notes.join(" · ");
+  } else {
+    coachNotes.remove();
+  }
   equipmentTags.innerHTML = "";
   (activity.equipment || []).forEach((item) => {
     const tag = document.createElement("span");

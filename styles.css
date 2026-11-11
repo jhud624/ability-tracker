@@ -365,6 +365,45 @@ h3 {
   line-height: 1.45;
 }
 
+.activity-copy .activity-summary[hidden] { display: none; }
+
+.coach-notes { margin-top: 4px; }
+
+.coach-notes summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--orange);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  list-style: none;
+}
+
+.coach-notes summary::-webkit-details-marker { display: none; }
+
+.coach-notes summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.coach-notes[open] summary::before { transform: rotate(45deg); }
+
+.coach-notes summary:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.coach-notes[open] summary { margin-bottom: 2px; }
+
 .equipment-tags {
   display: flex;
   flex-wrap: wrap;
@@ -1893,6 +1932,7 @@ h1 { max-width: none; margin-bottom: 2px; font-size: 22px; line-height: 1.1; }
 .activity-card.is-collapsed .collapse-toggle svg { transform: rotate(-90deg); }
 .activity-card.is-collapsed > *:not(.activity-main) { display: none; }
 .activity-card.is-collapsed .activity-copy > p,
+.activity-card.is-collapsed .coach-notes,
 .activity-card.is-collapsed .equipment-tags { display: none; }
 .collapse-summary {
   display: none;
