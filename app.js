@@ -867,10 +867,14 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   activeAutosaveFlushers.add(flushNow);
   controls.inputs.forEach((input) => {
     input.addEventListener("input", () => {
+      input.dataset.userEdited = "true";
       saveDraftAndUpdate();
       scheduleAutosave();
     });
-    input.addEventListener("change", () => scheduleAutosave(0));
+    input.addEventListener("change", () => {
+      input.dataset.userEdited = "true";
+      scheduleAutosave(0);
+    });
     input.addEventListener("blur", () => scheduleAutosave(0));
   });
 
@@ -940,8 +944,14 @@ function attachFeedbackAutosave(form, activity) {
   ["difficulty", "back_pain", "notes", "actual_duration_minutes", "timing_status"].forEach((field) => {
     const input = form.elements[field];
     if (!input) return;
-    input.addEventListener("input", () => scheduleAutosave());
-    input.addEventListener("change", () => scheduleAutosave(0));
+    input.addEventListener("input", () => {
+      input.dataset.userEdited = "true";
+      scheduleAutosave();
+    });
+    input.addEventListener("change", () => {
+      input.dataset.userEdited = "true";
+      scheduleAutosave(0);
+    });
   });
 
   form.addEventListener("submit", async (event) => {
@@ -1121,6 +1131,9 @@ function renderActivityActuals(activity) {
       select.append(option);
     });
     label.append(select);
+    select.addEventListener("change", () => {
+      select.dataset.userEdited = "true";
+    });
     const button = document.createElement("button");
     button.className = "ghost-button";
     button.type = "submit";
@@ -1305,6 +1318,7 @@ function renderActivity(activity, options = {}) {
   subtaskList.addEventListener("change", async (event) => {
     const checkbox = event.target.closest("[data-subtask-id]");
     if (!checkbox) return;
+    checkbox.dataset.userEdited = "true";
     await flushActiveAutosaves();
     await updateActivity(activity.activity_id, {
       subtask_id: checkbox.dataset.subtaskId,
@@ -2676,12 +2690,15 @@ function preservedControlIdentity(control) {
   ].join("\u0000");
 }
 
-function snapshotPreservedControls(root) {
+function snapshotPreservedControls(root, { onlyUserEdited = false } = {}) {
   const records = [];
   if (!root) return records;
   const seen = new Map();
   for (const control of root.querySelectorAll("input, textarea, select")) {
     if (!isPreservedFormControl(control)) continue;
+    // Today and Week render two copies of one activity. Copying every value
+    // back would put a stale, untouched copy on top of a save from the other card.
+    if (onlyUserEdited && control.dataset.userEdited !== "true") continue;
     const base = preservedControlIdentity(control);
     const index = seen.get(base) || 0;
     seen.set(base, index + 1);
@@ -2710,21 +2727,29 @@ function restorePreservedControls(root, records) {
   for (const record of records) {
     const control = byId.get(record.id);
     if (!control) continue;
-    if (record.checkable) control.checked = record.checked;
-    else control.value = record.value;
+    if (record.checkable) {
+      if (control.checked === record.checked) continue;
+      control.checked = record.checked;
+    } else if (control.value === record.value) {
+      continue;
+    } else {
+      control.value = record.value;
+    }
+    control.dataset.userEdited = "true";
   }
 }
 
 // Goals, coach notes, and the other explicit-save forms are not date-dependent.
 // Rebuilding them from state.data would drop text the user has not submitted.
 // Today and Week have to be rebuilt so the date, fallback, and today marker
-// stay current; their in-progress values are copied back onto the new cards.
+// stay current. Only fields the user actually edited are copied back; an
+// untouched duplicate of the same activity must pick up the saved value.
 function renderForNewLocalDate() {
   const preserved = [
-    elements.todaySwitchForm,
-    elements.todayList,
-    elements.weekGrid
-  ].map((root) => ({ root, records: snapshotPreservedControls(root) }));
+    { root: elements.todaySwitchForm, records: snapshotPreservedControls(elements.todaySwitchForm) },
+    { root: elements.todayList, records: snapshotPreservedControls(elements.todayList, { onlyUserEdited: true }) },
+    { root: elements.weekGrid, records: snapshotPreservedControls(elements.weekGrid, { onlyUserEdited: true }) }
+  ];
   activeAutosaveFlushers.clear();
   updateOverview();
   renderToday();

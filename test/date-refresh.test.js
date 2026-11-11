@@ -185,12 +185,106 @@ test("visibility date change keeps unsaved goals, notes, and other dashboard inp
       document.querySelector("#week-grid article[data-activity-id='lower'] textarea[name='notes']").value,
       typedWorkoutNote
     );
+    assert.equal(
+      document.querySelector("#today-list article[data-activity-id='lower'] textarea[name='notes']").value,
+      ""
+    );
     assert.equal(document.querySelector("#today-switch-select").value, "upper");
 
     const writes = calls.filter((call) => !["GET", "HEAD"].includes(call.method));
     assert.equal(writes.some((call) => call.url.includes("/api/goals")), false);
     assert.equal(writes.some((call) => call.url.includes("/api/coach-notes")), false);
     assert.equal(errors.length, 0, errors.join("\n"));
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+test("date refresh keeps a saved edit instead of restoring the untouched duplicate card", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const savedFromToday = "Notes saved from the today card";
+  const state = pageFixture();
+  const calls = [];
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, {
+    url: "http://127.0.0.1:4173/",
+    pretendToBeVisual: true,
+    runScripts: "outside-only"
+  });
+  const { window } = dom;
+  const context = dom.getInternalVMContext();
+
+  try {
+    runInPage(context, `
+      const RealDate = Date;
+      let nowMs = ${Date.parse("2026-11-11T15:00:00Z")};
+      class ClockDate extends RealDate {
+        constructor(...args) {
+          super(...(args.length ? args : [nowMs]));
+        }
+        static now() { return nowMs; }
+      }
+      globalThis.Date = ClockDate;
+      globalThis.__setNow = (ms) => { nowMs = ms; };
+    `, "clock.js");
+
+    window.fetch = async (input, options = {}) => {
+      const url = String(input?.url || input);
+      const method = String(options.method || "GET").toUpperCase();
+      calls.push({ url, method, body: options.body ? String(options.body) : "" });
+      const respond = (status, body) => ({
+        status,
+        ok: status >= 200 && status < 300,
+        json: async () => body
+      });
+      if (url.includes("/api/session")) return respond(200, { authenticated: true });
+      if (url.includes("/api/state")) return respond(200, state);
+      if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+      if (method === "POST" && url.includes("/api/activities/lower/feedback")) {
+        const activity = state.active_plan.activities.find((item) => item.activity_id === "lower");
+        activity.feedback = { ...(activity.feedback || {}), ...JSON.parse(options.body) };
+        return respond(200, state);
+      }
+      return respond(500, { error: "synthetic test does not save this write" });
+    };
+
+    for (const file of ["activity-summary.js", "today-list.js", "app.js"]) {
+      runInPage(context, fs.readFileSync(path.join(root, file), "utf8"), file);
+    }
+
+    const { document } = window;
+    await waitFor(() => document.querySelector("#goal-primary").value === savedGoal
+      && document.querySelector("#today-list textarea[name='notes']"));
+
+    typeInto(window, document.querySelector("#goal-primary"), typedGoal);
+    typeInto(window, document.querySelector("#coach-notes"), typedNotes);
+    typeInto(window, document.querySelector("#today-list textarea[name='notes']"), savedFromToday);
+    assert.equal(document.querySelector("#week-grid textarea[name='notes']").value, "");
+
+    window.__setNow(Date.parse("2026-11-12T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector("#week-grid article[data-activity-id='lower'] textarea[name='notes']").value === savedFromToday);
+
+    assert.equal(
+      document.querySelector("#today-list article[data-activity-id='lower'] textarea[name='notes']").value,
+      savedFromToday
+    );
+    assert.equal(document.querySelector("#goal-primary").value, typedGoal);
+    assert.equal(document.querySelector("#coach-notes").value, typedNotes);
+    assert.equal(calls.some((call) => call.method === "PUT" && call.url.includes("/api/goals")), false);
+    assert.equal(calls.some((call) => call.method === "PUT" && call.url.includes("/api/coach-notes")), false);
+
+    window.__setNow(Date.parse("2026-11-13T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector("#today-list h3")?.textContent === "Upper body"
+      && document.querySelector("#week-grid article[data-activity-id='lower'] textarea[name='notes']").value === savedFromToday);
+    assert.equal(document.querySelector(".today-fallback-notice"), null);
+    assert.equal(document.querySelector("#goal-primary").value, typedGoal);
+    assert.equal(document.querySelector("#coach-notes").value, typedNotes);
   } finally {
     dom.window.close();
     if (previousTZ === undefined) delete process.env.TZ;
