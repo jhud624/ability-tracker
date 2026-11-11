@@ -627,6 +627,30 @@ test("browser transport rechecks a captured intent after asynchronous unlock and
   assert.equal(writes, 0);
 });
 
+test("browser: successful silent saves rerender when recoveryRequired makes the intent stale", async () => {
+  for (const save of ["saveFeedback", "saveExerciseLog"]) {
+    const gate = deferred();
+    const app = browser(async (path, options = {}) => {
+      if (options.method === "POST") return gate.promise;
+      return response(path === "/api/state" ? snapshot(1) : { revision: 2, summary_text: "current" });
+    });
+    await app.run("loadState()");
+    const intent = app.sync.captureIntent();
+    app.context.intent = intent;
+    const before = app.rendered.length;
+    const saving = app.run(`${save}("synthetic", {exercise_id:"A"}, {silent:true,rerender:false,intent})`);
+    await turn();
+    app.sync.state.recoveryRequired = true;
+    assert.equal(intent.isCurrent(), false);
+    gate.resolve(response(snapshot(2)));
+    await saving;
+    assert.equal(app.sync.state.saveStatus, "saved");
+    assert.equal(app.sync.state.recoveryRequired, true);
+    assert.equal(app.rendered.length, before + 1, `${save}: recovery boundary redraws after a successful silent save`);
+    assert.equal(app.rendered.at(-1).revision, 2);
+  }
+});
+
 test("browser: silent restore-boundary autosaves rebuild controls without reviving canceled edits", async () => {
   for (const kind of ["feedback", "exercise"]) {
     const sent = [];

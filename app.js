@@ -2414,7 +2414,7 @@ async function saveFeedback(activityId, payload, options = {}) {
       autosaveKey: JSON.stringify(["feedback", activityId]),
       body: JSON.stringify(payload)
     });
-    // A restore cancels the old controls; rebuild them with fresh guards.
+    // A restore or recovery boundary (e.g. lost-ack / recoveryRequired) cancels the old controls; rebuild them with fresh guards.
     if (rerender || (intent && !intent.isCurrent())) render();
     const summaryPromise = refreshCoachSummary();
     if (rerender) {
@@ -2439,7 +2439,7 @@ async function saveExerciseLog(activityId, payload, options = {}) {
       autosaveKey: JSON.stringify(["exercise-log", activityId, payload.exercise_id]),
       body: JSON.stringify(payload)
     });
-    // A restore cancels the old controls; rebuild them with fresh guards.
+    // A restore or recovery boundary (e.g. lost-ack / recoveryRequired) cancels the old controls; rebuild them with fresh guards.
     if (rerender || (intent && !intent.isCurrent())) render();
     const summaryPromise = refreshCoachSummary();
     if (rerender) {
