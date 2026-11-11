@@ -10,6 +10,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const require = createRequire(import.meta.url);
 const { startServer } = require("../server.js");
 
+// Keep the synthetic race ahead of today so the plan includes training weeks.
+const futureRace = new Date();
+futureRace.setUTCDate(futureRace.getUTCDate() + 16 * 7);
+const raceDate = futureRace.toISOString().slice(0, 10);
+
 function codeChallenge(verifier) {
   return crypto.createHash("sha256").update(verifier).digest("base64url");
 }
@@ -22,6 +27,8 @@ async function startHttpServer() {
 }
 
 test("Coach Loop MCP lists tools and can read the coach summary", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-mcp-race-test-`);
   const { server, url } = await startHttpServer();
   const client = new Client({ name: "coach-loop-test", version: "0.1.0" });
   const transport = new StdioClientTransport({
@@ -72,6 +79,7 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
     assert.equal(stateResult.content[0].type, "text");
     assert.doesNotMatch(stateResult.content[0].text, /route_map|heart_rate_series|route_shape/);
 
+    await client.callTool({ name: "update_run_plan", arguments: { race_date: raceDate } });
     const runPlanResult = await client.callTool({ name: "get_run_plan", arguments: {} });
     assert.equal(runPlanResult.content[0].type, "text");
     assert.match(runPlanResult.content[0].text, /run_plan/);
@@ -79,6 +87,8 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
   } finally {
     await client.close();
     await new Promise((resolve) => server.close(resolve));
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
   }
 });
 
@@ -138,6 +148,8 @@ test("Coach Loop MCP can remember, update, and forget one preference without rep
 });
 
 test("Coach Loop MCP can patch goals and run plan without replacing goals", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-mcp-race-test-`);
   const { server, url } = await startHttpServer();
   const client = new Client({ name: "coach-loop-run-plan-test", version: "0.1.0" });
   const transport = new StdioClientTransport({
@@ -165,7 +177,7 @@ test("Coach Loop MCP can patch goals and run plan without replacing goals", asyn
     await client.callTool({
       name: "update_run_plan",
       arguments: {
-        race_date: "2026-10-18",
+        race_date: raceDate,
         weekly_runs: 4,
         peak_long_run_miles: 11,
         cutback_every_weeks: 4
@@ -176,18 +188,20 @@ test("Coach Loop MCP can patch goals and run plan without replacing goals", asyn
     const state = JSON.parse(stateResult.content[0].text);
     assert.equal(state.goals.primary, "Half marathon test goal");
     assert.equal(state.goals.back_health, "Preserve this field");
-    assert.equal(state.goals.race_date, "2026-10-18");
+    assert.equal(state.goals.race_date, raceDate);
     assert.equal(state.goals.run_frequency_per_week, 4);
     assert.equal(state.goals.run_plan.weekly_runs, 4);
     assert.equal(state.goals.run_plan.peak_long_run_miles, 11);
 
     const runPlanResult = await client.callTool({ name: "get_run_plan", arguments: {} });
     const runPlanPayload = JSON.parse(runPlanResult.content[0].text);
-    assert.equal(runPlanPayload.run_plan.race.date, "2026-10-18");
+    assert.equal(runPlanPayload.run_plan.race.date, raceDate);
     assert.equal(runPlanPayload.run_plan.assumptions.weekly_runs, 4);
   } finally {
     await client.close();
     await new Promise((resolve) => server.close(resolve));
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
   }
 });
 
