@@ -836,6 +836,14 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   // flushing does not manufacture a blank exercise log. Preserve draft recovery
   // and real saved-log comparisons.
   let lastSaved = exerciseLogSignature(!hasSavedLog && !draft ? controls.payload() : savedLog);
+  // Snapshot the saved log when the user edits, not when the request returns.
+  // A failed save may find the shared draft gone because a newer save cleared
+  // it. That empty slot is not a reason to write the older value back.
+  let savedSignatureAtEdit = savedExerciseLogSignature(activity.activity_id, exercise.exercise_id);
+
+  function noteEditBaseline() {
+    savedSignatureAtEdit = savedExerciseLogSignature(activity.activity_id, exercise.exercise_id);
+  }
 
   function completeRowSubtask() {
     const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');
@@ -902,11 +910,16 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       if (exerciseLogHasData(payload) && !dateRefreshInProgress) queueAutoComplete();
     } catch (error) {
       setAutosaveStatus(controls.status, "Not saved", "is-error");
-      // A concurrent flush from the other card can remove this draft while the
-      // request is in flight. Put it back when the screen still shows the
-      // value that failed and nobody has stored a newer one.
+      // A concurrent flush can remove this draft while the request is in
+      // flight. Put it back when the field still shows the failed value and
+      // nobody has stored a newer draft. Also require the saved log to be the
+      // one this edit was based on. A newer save clears the slot, and a later
+      // failure must not recreate the value it replaced.
       const current = controls.payload();
-      if (exerciseLogSignature(current) === signature && !readExerciseDraft(activity.activity_id, current.exercise_id)) {
+      const savedSignature = savedExerciseLogSignature(activity.activity_id, current.exercise_id);
+      if (exerciseLogSignature(current) === signature
+          && savedSignature === savedSignatureAtEdit
+          && !readExerciseDraft(activity.activity_id, current.exercise_id)) {
         writeExerciseDraft(activity.activity_id, current, draftOwner);
       }
     } finally {
@@ -915,6 +928,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   }
 
   function saveDraftAndUpdate() {
+    noteEditBaseline();
     writeExerciseDraft(activity.activity_id, controls.payload(), draftOwner);
     controls.updateTotal();
   }
@@ -938,6 +952,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     });
     input.addEventListener("change", () => {
       input.dataset.userEdited = "true";
+      noteEditBaseline();
       scheduleAutosave(0);
     });
     input.addEventListener("blur", () => scheduleAutosave(0));

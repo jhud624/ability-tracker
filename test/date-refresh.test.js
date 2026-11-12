@@ -987,3 +987,284 @@ test("a failed week weight draft survives today's equal-signature flush", async 
     else process.env.TZ = previousTZ;
   }
 });
+
+const lowerExerciseDraftKey = "coach_loop_exercise_log_draft:lower:activity";
+
+function lowerWeightInput(document, root) {
+  return document.querySelector(`${root} article[data-activity-id='lower'] input[name='weight_lbs']`);
+}
+
+function readLowerExerciseDraft(window) {
+  return JSON.parse(window.localStorage.getItem(lowerExerciseDraftKey) || "null");
+}
+
+function setWeight(window, input, value) {
+  input.value = value;
+  input.dispatchEvent(new window.InputEvent("input", {
+    bubbles: true,
+    data: value,
+    inputType: "insertText"
+  }));
+}
+
+function holdExerciseLogPosts(window, state, calls) {
+  const realFetch = window.fetch;
+  const pending = [];
+  window.__holdExerciseWeights = new Set();
+  window.fetch = async (input, options = {}) => {
+    const url = String(input?.url || input);
+    const method = String(options.method || "GET").toUpperCase();
+    const body = options.body ? String(options.body) : "";
+    if (method === "POST" && url.includes("/exercise-log")) {
+      let payload = null;
+      try {
+        payload = JSON.parse(body);
+      } catch {
+        payload = null;
+      }
+      if (payload && window.__holdExerciseWeights.has(String(payload.weight_lbs))) {
+        calls.push({ url, method, body });
+        let settle;
+        const done = new Promise((resolve) => {
+          settle = resolve;
+        });
+        pending.push({ weight: String(payload.weight_lbs), settle });
+        const outcome = await done;
+        if (!outcome?.ok) return { status: 503, ok: false, json: async () => ({ error: "offline" }) };
+        const activity = state.active_plan.activities.find((item) => item.activity_id === "lower");
+        activity.exercise_logs = { ...(activity.exercise_logs || {}), [payload.exercise_id]: payload };
+        return { status: 200, ok: true, json: async () => state };
+      }
+    }
+    return realFetch(input, options);
+  };
+  return {
+    pending,
+    hold(weights) {
+      window.__holdExerciseWeights = new Set(weights.map((weight) => String(weight)));
+    },
+    release(weight, ok) {
+      const index = pending.findIndex((entry) => entry.weight === String(weight));
+      if (index < 0) throw new Error(`no held exercise-log save for ${weight}`);
+      pending.splice(index, 1)[0].settle({ ok });
+    },
+    settleAll() {
+      while (pending.length) pending.pop().settle({ ok: false });
+    }
+  };
+}
+
+function assertNoDraftOwnerLeak(calls, document, owner = "") {
+  assert.equal(calls.some((call) => String(call.body || "").includes("draft_owner")), false);
+  assert.equal(document.body.innerHTML.includes("draft_owner"), false);
+  if (owner) assert.equal(document.body.innerHTML.includes(owner), false);
+}
+
+async function refreshLowerWeights(window) {
+  const { document } = window;
+  const previous = lowerWeightInput(document, "#today-list");
+  document.querySelector("#refresh-button").click();
+  await waitFor(() => {
+    const today = lowerWeightInput(document, "#today-list");
+    return today && today !== previous && today.value !== "";
+  });
+  return {
+    today: lowerWeightInput(document, "#today-list").value,
+    week: lowerWeightInput(document, "#week-grid").value
+  };
+}
+
+async function hideDashboard(window) {
+  Object.defineProperty(window.document, "visibilityState", {
+    configurable: true,
+    get: () => "hidden"
+  });
+  window.document.dispatchEvent(new window.Event("visibilitychange"));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+async function saveInitialLowerWeights(window, calls) {
+  const { document } = window;
+  await waitFor(() => lowerWeightInput(document, "#today-list") && lowerWeightInput(document, "#week-grid"));
+  const today = lowerWeightInput(document, "#today-list");
+  const week = lowerWeightInput(document, "#week-grid");
+  typeInto(window, today, "10");
+  await waitFor(() => exerciseWeights(calls).includes("10") && today.dataset.userEdited !== "true");
+  typeInto(window, week, "30");
+  await waitFor(() => exerciseWeights(calls).includes("30") && week.dataset.userEdited !== "true");
+  return { today, week };
+}
+
+async function runSupersededFailure(order) {
+  const state = pageFixture();
+  const page = openDateRefreshPage(state);
+  const { dom, window, calls } = page;
+  const gate = holdExerciseLogPosts(window, state, calls);
+  const savedWeight = () => state.active_plan.activities.find((item) => item.activity_id === "lower").exercise_logs?.activity?.weight_lbs;
+  try {
+    const { today, week } = await saveInitialLowerWeights(window, calls);
+    assert.equal(savedWeight(), "30");
+    const weekStatus = () => week.closest("form").querySelector(".autosave-status");
+    if (order === "newer-first") gate.hold(["10"]);
+    else gate.hold(["10", "50"]);
+
+    setWeight(window, week, "10");
+    week.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => gate.pending.some((entry) => entry.weight === "10"));
+
+    setWeight(window, today, "50");
+    today.dispatchEvent(new window.Event("blur"));
+    if (order === "newer-first") {
+      await waitFor(() => savedWeight() === "50" && readLowerExerciseDraft(window) === null);
+    } else {
+      await waitFor(() => gate.pending.some((entry) => entry.weight === "50"));
+      assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "50");
+      gate.release("10", false);
+      await waitFor(() => weekStatus().textContent === "Not saved");
+      assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "50");
+      assert.equal(savedWeight(), "30");
+      gate.release("50", true);
+      await waitFor(() => savedWeight() === "50" && readLowerExerciseDraft(window) === null);
+    }
+
+    const postsAfterNewerSave = exerciseWeights(calls).length;
+    if (order === "newer-first") {
+      gate.release("10", false);
+      await waitFor(() => weekStatus().textContent === "Not saved");
+      assert.equal(readLowerExerciseDraft(window), null);
+    }
+    assert.equal(savedWeight(), "50");
+    assert.equal(exerciseWeights(calls).at(-1), "50");
+
+    gate.hold([]);
+    const shown = await refreshLowerWeights(window);
+    assert.equal(shown.today, "50");
+    assert.equal(shown.week, "50");
+    assert.equal(readLowerExerciseDraft(window), null);
+    await hideDashboard(window);
+    assert.equal(exerciseWeights(calls).length, postsAfterNewerSave);
+    assert.equal(exerciseWeights(calls).at(-1), "50");
+    assert.equal(savedWeight(), "50");
+    assert.equal(lowerWeightInput(window.document, "#today-list").value, "50");
+    assert.equal(lowerWeightInput(window.document, "#week-grid").value, "50");
+    assertNoDraftOwnerLeak(calls, window.document);
+  } finally {
+    gate.settleAll();
+    dom.window.close();
+  }
+}
+
+test("a failed exercise save does not restore a weight a newer save already replaced", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const failures = [];
+  try {
+    for (const order of ["newer-first", "failed-first"]) {
+      try {
+        await runSupersededFailure(order);
+      } catch (error) {
+        failures.push(`${order}: ${error.message}`);
+      }
+    }
+    assert.equal(failures.length, 0, failures.join("\n"));
+  } finally {
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+test("a failed exercise save restores a cleared draft when the saved log is unchanged", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const { dom, window, calls } = openDateRefreshPage(state);
+  const gate = holdExerciseLogPosts(window, state, calls);
+  const savedWeight = () => state.active_plan.activities.find((item) => item.activity_id === "lower").exercise_logs?.activity?.weight_lbs;
+  try {
+    const { week } = await saveInitialLowerWeights(window, calls);
+    assert.equal(savedWeight(), "30");
+    gate.hold(["40"]);
+    setWeight(window, week, "40");
+    week.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => gate.pending.some((entry) => entry.weight === "40"));
+    assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "40");
+    window.localStorage.removeItem(lowerExerciseDraftKey);
+    assert.equal(readLowerExerciseDraft(window), null);
+
+    gate.release("40", false);
+    await waitFor(() => week.closest("form").querySelector(".autosave-status").textContent === "Not saved");
+    const restored = readLowerExerciseDraft(window);
+    assert.equal(restored?.weight_lbs, "40");
+    assert.equal(typeof restored?.draft_owner, "string");
+    assert.equal(restored.draft_owner.length > 0, true);
+    assert.equal(savedWeight(), "30");
+    assertNoDraftOwnerLeak(calls, window.document, restored.draft_owner);
+
+    gate.hold([]);
+    window.__failExerciseSaves = true;
+    const shown = await refreshLowerWeights(window);
+    assert.equal(shown.today, "40");
+    assert.equal(shown.week, "40");
+    assert.equal(savedWeight(), "30");
+    assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "40");
+    assertNoDraftOwnerLeak(calls, window.document, restored.draft_owner);
+
+    const postsBeforeHide = exerciseWeights(calls).length;
+    await hideDashboard(window);
+    await waitFor(() => exerciseWeights(calls).length > postsBeforeHide);
+    assert.equal(savedWeight(), "30");
+    assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "40");
+    assert.equal(exerciseWeights(calls).every((weight) => weight === "10" || weight === "30" || weight === "40"), true);
+    assertNoDraftOwnerLeak(calls, window.document, readLowerExerciseDraft(window)?.draft_owner || restored.draft_owner);
+  } finally {
+    gate.settleAll();
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+test("a later failed flush does not restore an edit a newer save already replaced", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const { dom, window, calls } = openDateRefreshPage(state);
+  const savedWeight = () => state.active_plan.activities.find((item) => item.activity_id === "lower").exercise_logs?.activity?.weight_lbs;
+  try {
+    const { today, week } = await saveInitialLowerWeights(window, calls);
+    const weekStatus = () => week.closest("form").querySelector(".autosave-status");
+    window.__failExerciseSaves = true;
+    const postsBeforeFailedEdit = exerciseWeights(calls).length;
+    setWeight(window, week, "10");
+    week.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => exerciseWeights(calls).length > postsBeforeFailedEdit && weekStatus().textContent === "Not saved");
+    assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "10");
+    assert.equal(savedWeight(), "30");
+
+    window.__failExerciseSaves = false;
+    setWeight(window, today, "50");
+    today.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => savedWeight() === "50" && readLowerExerciseDraft(window) === null);
+
+    window.__failExerciseSaves = true;
+    const postsBeforeRetry = exerciseWeights(calls).length;
+    week.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => exerciseWeights(calls).length > postsBeforeRetry && weekStatus().textContent === "Not saved");
+    assert.equal(readLowerExerciseDraft(window), null);
+    assert.equal(savedWeight(), "50");
+
+    const postsAfterRetry = exerciseWeights(calls).length;
+    const shown = await refreshLowerWeights(window);
+    assert.equal(shown.today, "50");
+    assert.equal(shown.week, "50");
+    await hideDashboard(window);
+    assert.equal(exerciseWeights(calls).length, postsAfterRetry);
+    assert.equal(exerciseWeights(calls).at(-1), "10");
+    assert.equal(savedWeight(), "50");
+    assertNoDraftOwnerLeak(calls, window.document);
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
