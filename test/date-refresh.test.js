@@ -1268,3 +1268,101 @@ test("a later failed flush does not restore an edit a newer save already replace
     else process.env.TZ = previousTZ;
   }
 });
+
+test("a same-card overlap keeps the newer failed weight after the earlier save clears it", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const { dom, window, calls } = openDateRefreshPage(state);
+  const gate = holdExerciseLogPosts(window, state, calls);
+  const savedWeight = () => state.active_plan.activities.find((item) => item.activity_id === "lower").exercise_logs?.activity?.weight_lbs;
+  try {
+    const { week } = await saveInitialLowerWeights(window, calls);
+    assert.equal(savedWeight(), "30");
+    const weekStatus = () => week.closest("form").querySelector(".autosave-status");
+    gate.hold(["10", "20"]);
+
+    setWeight(window, week, "10");
+    week.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => gate.pending.some((entry) => entry.weight === "10"));
+    setWeight(window, week, "20");
+    week.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => gate.pending.some((entry) => entry.weight === "20"));
+
+    gate.release("10", true);
+    await waitFor(() => savedWeight() === "10" && readLowerExerciseDraft(window) === null);
+    assert.equal(week.value, "20");
+
+    gate.release("20", false);
+    await waitFor(() => weekStatus().textContent === "Not saved");
+    assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "20");
+    assert.equal(savedWeight(), "10");
+    assert.equal(typeof readLowerExerciseDraft(window)?.draft_owner, "string");
+    assertNoDraftOwnerLeak(calls, window.document, readLowerExerciseDraft(window).draft_owner);
+
+    gate.hold([]);
+    window.__failExerciseSaves = true;
+    const shown = await refreshLowerWeights(window);
+    assert.deepEqual(shown, { today: "20", week: "20" });
+    assert.equal(savedWeight(), "10");
+    assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "20");
+    assertNoDraftOwnerLeak(calls, window.document, readLowerExerciseDraft(window).draft_owner);
+  } finally {
+    gate.settleAll();
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+test("a late change does not restore an older failed weight after another card saved", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const { dom, window, calls } = openDateRefreshPage(state);
+  const gate = holdExerciseLogPosts(window, state, calls);
+  const savedWeight = () => state.active_plan.activities.find((item) => item.activity_id === "lower").exercise_logs?.activity?.weight_lbs;
+  try {
+    const { today, week } = await saveInitialLowerWeights(window, calls);
+    assert.equal(savedWeight(), "30");
+    gate.hold(["50"]);
+    setWeight(window, today, "50");
+    today.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => gate.pending.some((entry) => entry.weight === "50"));
+
+    gate.hold(["50", "10"]);
+    setWeight(window, week, "10");
+    await waitFor(() => gate.pending.some((entry) => entry.weight === "10"));
+    gate.release("50", true);
+    await waitFor(() => savedWeight() === "50" && readLowerExerciseDraft(window) === null);
+
+    gate.hold(["10"]);
+    week.dispatchEvent(new window.Event("change"));
+    await waitFor(() => gate.pending.filter((entry) => entry.weight === "10").length === 2);
+    const weekStatus = () => week.closest("form").querySelector(".autosave-status");
+    gate.release("10", false);
+    await waitFor(() => gate.pending.filter((entry) => entry.weight === "10").length === 1 && weekStatus().textContent === "Not saved");
+    assert.equal(readLowerExerciseDraft(window), null);
+    assert.equal(savedWeight(), "50");
+
+    gate.release("10", false);
+    await waitFor(() => gate.pending.length === 0 && weekStatus().textContent === "Not saved");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(readLowerExerciseDraft(window), null);
+    assert.equal(week.value, "10");
+    assert.equal(savedWeight(), "50");
+    assert.equal(exerciseWeights(calls).filter((weight) => weight === "10").length >= 2, true);
+
+    gate.hold([]);
+    const shown = await refreshLowerWeights(window);
+    assert.deepEqual(shown, { today: "50", week: "50" });
+    assert.equal(readLowerExerciseDraft(window), null);
+    assert.equal(savedWeight(), "50");
+    assertNoDraftOwnerLeak(calls, window.document);
+  } finally {
+    gate.settleAll();
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});

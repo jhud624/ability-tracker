@@ -839,10 +839,14 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   // Snapshot the saved log when the user edits, not when the request returns.
   // A failed save may find the shared draft gone because a newer save cleared
   // it. That empty slot is not a reason to write the older value back.
+  // baselinePayloadSignature is the field value that snapshot belongs to. A
+  // later change of that same value is the field committing, not a new edit.
   let savedSignatureAtEdit = savedExerciseLogSignature(activity.activity_id, exercise.exercise_id);
+  let baselinePayloadSignature = exerciseLogSignature(controls.payload());
 
   function noteEditBaseline() {
     savedSignatureAtEdit = savedExerciseLogSignature(activity.activity_id, exercise.exercise_id);
+    baselinePayloadSignature = exerciseLogSignature(controls.payload());
   }
 
   function completeRowSubtask() {
@@ -899,6 +903,9 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     }
     requestsInFlight += 1;
     setAutosaveStatus(controls.status, "Saving...", "is-saving");
+    // This card can have two saves in flight. Freeze the baseline for this
+    // request so a later edit cannot move the check out from under it.
+    const baselineAtRequest = savedSignatureAtEdit;
     try {
       await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false });
       lastSaved = signature;
@@ -912,13 +919,13 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       setAutosaveStatus(controls.status, "Not saved", "is-error");
       // A concurrent flush can remove this draft while the request is in
       // flight. Put it back when the field still shows the failed value and
-      // nobody has stored a newer draft. Also require the saved log to be the
-      // one this edit was based on. A newer save clears the slot, and a later
-      // failure must not recreate the value it replaced.
+      // nobody has stored a newer draft. The saved log must still be the one
+      // this request started from, or the log this card itself just saved.
+      // Another card's newer save matches neither, so the old value stays gone.
       const current = controls.payload();
       const savedSignature = savedExerciseLogSignature(activity.activity_id, current.exercise_id);
       if (exerciseLogSignature(current) === signature
-          && savedSignature === savedSignatureAtEdit
+          && (savedSignature === baselineAtRequest || savedSignature === lastSaved)
           && !readExerciseDraft(activity.activity_id, current.exercise_id)) {
         writeExerciseDraft(activity.activity_id, current, draftOwner);
       }
@@ -952,7 +959,10 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     });
     input.addEventListener("change", () => {
       input.dataset.userEdited = "true";
-      noteEditBaseline();
+      // Typing already snapshotted this value. Change fires again when the
+      // field commits, sometimes after another card has saved. Retaking the
+      // baseline then would treat that newer save as the value's starting point.
+      if (exerciseLogSignature(controls.payload()) !== baselinePayloadSignature) noteEditBaseline();
       scheduleAutosave(0);
     });
     input.addEventListener("blur", () => scheduleAutosave(0));
