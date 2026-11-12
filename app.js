@@ -598,12 +598,47 @@ function readExerciseDraft(activityId, exerciseId) {
   }
 }
 
-function writeExerciseDraft(activityId, payload) {
+let exerciseDraftOwnerSeq = 0;
+
+function nextExerciseDraftOwner() {
+  exerciseDraftOwnerSeq += 1;
+  return `card-${exerciseDraftOwnerSeq}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function writeExerciseDraft(activityId, payload, owner) {
   try {
-    window.localStorage.setItem(exerciseDraftKey(activityId, payload.exercise_id), JSON.stringify(payload));
+    // draft_owner records which card wrote this shared draft. It stays in
+    // local storage only; exercise saves post controls.payload(), not this record.
+    const record = owner ? { ...payload, draft_owner: owner } : { ...payload };
+    window.localStorage.setItem(exerciseDraftKey(activityId, payload.exercise_id), JSON.stringify(record));
   } catch {
     // Drafting is a fallback for flaky mobile saves; failed storage should not block entry.
   }
+}
+
+function exerciseDraftFields(draft) {
+  if (!draft || typeof draft !== "object") return {};
+  const { draft_owner, ...fields } = draft;
+  return fields;
+}
+
+function savedExerciseLogSignature(activityId, exerciseId) {
+  const activity = activities().find((item) => item.activity_id === activityId);
+  const saved = activity?.exercise_logs?.[exerciseId];
+  if (!saved || typeof saved !== "object" || !Object.keys(saved).length) return null;
+  return exerciseLogSignature(saved);
+}
+
+// The shared draft may belong to the other copy of this exercise. An
+// equal-signature flush may drop it when this card wrote it — the user
+// returned to this card's own baseline — or when it already matches the saved
+// log. Another card's unsaved value can equal this card's stale baseline and
+// must stay so a reload can restore it.
+function shouldClearRevertedExerciseDraft(activityId, exerciseId, stored, signature, owner) {
+  if (!stored || exerciseLogSignature(stored) !== signature) return false;
+  if (stored.draft_owner && stored.draft_owner === owner) return true;
+  const savedSignature = savedExerciseLogSignature(activityId, exerciseId);
+  return savedSignature !== null && savedSignature === signature;
 }
 
 function clearExerciseDraft(activityId, exerciseId) {
@@ -793,6 +828,7 @@ function exerciseLogHasData(payload) {
 function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog = {}) {
   let timer = null;
   let requestsInFlight = 0;
+  const draftOwner = nextExerciseDraftOwner();
   const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
   const hasSavedLog = Object.keys(savedLog || {}).length > 0;
   // A newly rendered empty row has a title even when the user has not entered
@@ -841,14 +877,13 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     if (signature === lastSaved) {
       // Editing away and back before the debounce fires leaves userEdited set
       // on a value that already saved, and stores that value as the shared
-      // browser draft. Clear both only when nothing is in flight and the draft
-      // is this same value, so a date refresh does not rebuild both cards from
-      // a stale draft and save it over a newer log from the other card. A draft
-      // that still differs is unsaved and must stay.
+      // browser draft. Clear that mark when nothing is in flight. Clear the
+      // draft only when this card wrote it, or it already matches the saved
+      // log. Another card can be holding the same numbers as an unsaved edit.
       if (requestsInFlight === 0) {
         clearSavedExerciseEdits(controls.inputs, payload);
         const stored = readExerciseDraft(activity.activity_id, payload.exercise_id);
-        if (stored && exerciseLogSignature(stored) === signature) {
+        if (shouldClearRevertedExerciseDraft(activity.activity_id, payload.exercise_id, stored, signature, draftOwner)) {
           clearExerciseDraft(activity.activity_id, payload.exercise_id);
         }
       }
@@ -867,13 +902,20 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       if (exerciseLogHasData(payload) && !dateRefreshInProgress) queueAutoComplete();
     } catch (error) {
       setAutosaveStatus(controls.status, "Not saved", "is-error");
+      // A concurrent flush from the other card can remove this draft while the
+      // request is in flight. Put it back when the screen still shows the
+      // value that failed and nobody has stored a newer one.
+      const current = controls.payload();
+      if (exerciseLogSignature(current) === signature && !readExerciseDraft(activity.activity_id, current.exercise_id)) {
+        writeExerciseDraft(activity.activity_id, current, draftOwner);
+      }
     } finally {
       requestsInFlight -= 1;
     }
   }
 
   function saveDraftAndUpdate() {
-    writeExerciseDraft(activity.activity_id, controls.payload());
+    writeExerciseDraft(activity.activity_id, controls.payload(), draftOwner);
     controls.updateTotal();
   }
 
@@ -1083,7 +1125,7 @@ function renderExerciseLogs(activity, container) {
   exerciseRows(activity).forEach((exercise) => {
     const savedLog = logs[exercise.exercise_id] || {};
     const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
-    const log = { ...savedLog, ...(draft || {}) };
+    const log = { ...savedLog, ...exerciseDraftFields(draft) };
     const row = document.createElement("form");
     row.className = "exercise-log-row";
     row.dataset.exerciseId = exercise.exercise_id;
@@ -1107,7 +1149,7 @@ function appendExerciseLogControls(row, activity, exercise) {
   const savedLog = activity.exercise_logs?.[exercise.exercise_id] || {};
   const log = {
     ...savedLog,
-    ...(draft || {})
+    ...exerciseDraftFields(draft)
   };
   const controls = createExerciseLogControls(activity, exercise, log);
   attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);

@@ -825,6 +825,7 @@ function openDateRefreshPage(state) {
     if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
     if (method === "POST" && url.includes("/exercise-log")) {
       const payload = JSON.parse(body);
+      if (window.__failExerciseSaves) return respond(503, { error: "offline" });
       const activity = state.active_plan.activities.find((item) => item.activity_id === "lower");
       activity.exercise_logs = { ...(activity.exercise_logs || {}), [payload.exercise_id]: payload };
       return respond(200, state);
@@ -916,6 +917,70 @@ test("an equal-signature exercise flush keeps a draft that is still ahead of the
 
     await waitFor(() => exerciseWeights(calls).includes("40"));
     assert.equal(exerciseWeights(calls).at(-1), "40");
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+test("a failed week weight draft survives today's equal-signature flush", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const { dom, window, calls } = openDateRefreshPage(state);
+  const draftKey = "coach_loop_exercise_log_draft:lower:activity";
+
+  try {
+    const { document } = window;
+    const weightInput = (root) => document.querySelector(`${root} article[data-activity-id='lower'] input[name='weight_lbs']`);
+    const storedWeight = () => JSON.parse(window.localStorage.getItem(draftKey) || "null")?.weight_lbs;
+    const savedWeight = () => state.active_plan.activities.find((item) => item.activity_id === "lower").exercise_logs.activity.weight_lbs;
+    await waitFor(() => weightInput("#today-list") && weightInput("#week-grid"));
+    const todayWeight = weightInput("#today-list");
+    const weekWeight = weightInput("#week-grid");
+
+    typeInto(window, todayWeight, "10");
+    await waitFor(() => exerciseWeights(calls).includes("10") && todayWeight.dataset.userEdited !== "true");
+    typeInto(window, weekWeight, "30");
+    await waitFor(() => exerciseWeights(calls).includes("30") && weekWeight.dataset.userEdited !== "true");
+    assert.equal(savedWeight(), "30");
+
+    window.__failExerciseSaves = true;
+    const before = calls.length;
+    weekWeight.value = "10";
+    weekWeight.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "10", inputType: "insertText" }));
+    const weekStatus = weekWeight.closest("form").querySelector(".autosave-status");
+    await waitFor(() => calls.length > before && weekStatus.textContent === "Not saved");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(storedWeight(), "10");
+    assert.equal(weekWeight.dataset.userEdited, "true");
+    assert.equal(weekWeight.value, "10");
+    assert.equal(savedWeight(), "30");
+
+    // Today blur flushes only this card. Week is not retried, so a deleted draft stays deleted.
+    todayWeight.dispatchEvent(new window.Event("blur"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(storedWeight(), "10");
+
+    const postsBeforeHide = exerciseWeights(calls).length;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => exerciseWeights(calls).length > postsBeforeHide && weekStatus.textContent === "Not saved");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(storedWeight(), "10");
+    assert.equal(savedWeight(), "30");
+    assert.equal(weekWeight.dataset.userEdited, "true");
+
+    window.dispatchEvent(new window.Event("pagehide"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(storedWeight(), "10");
+    assert.equal(savedWeight(), "30");
+
+    document.querySelector("#refresh-button").click();
+    await waitFor(() => weightInput("#today-list")?.value === "10" && weightInput("#week-grid")?.value === "10");
+    assert.equal(savedWeight(), "30");
+    assert.equal(storedWeight(), "10");
   } finally {
     dom.window.close();
     if (previousTZ === undefined) delete process.env.TZ;
