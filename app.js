@@ -836,6 +836,10 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   // flushing does not manufacture a blank exercise log. Preserve draft recovery
   // and real saved-log comparisons.
   let lastSaved = exerciseLogSignature(!hasSavedLog && !draft ? controls.payload() : savedLog);
+  // Counts successful saves from this card only. A failed request may see a
+  // saved log equal to lastSaved because another card wrote this card's older
+  // value; that match is not a save this card made after the request started.
+  let ownSaveCount = 0;
   // Snapshot the saved log when the user edits, not when the request returns.
   // A failed save may find the shared draft gone because a newer save cleared
   // it. That empty slot is not a reason to write the older value back.
@@ -903,11 +907,13 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     }
     requestsInFlight += 1;
     setAutosaveStatus(controls.status, "Saving...", "is-saving");
-    // This card can have two saves in flight. Freeze the baseline for this
-    // request so a later edit cannot move the check out from under it.
+    // This card can have two saves in flight. Freeze the edit-time baseline
+    // and this card's own success count so a later edit cannot move the check.
     const baselineAtRequest = savedSignatureAtEdit;
+    const ownSavesAtRequest = ownSaveCount;
     try {
       await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false });
+      ownSaveCount += 1;
       lastSaved = signature;
       clearExerciseDraft(activity.activity_id, payload.exercise_id);
       clearSavedExerciseEdits(controls.inputs, payload);
@@ -920,12 +926,14 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       // A concurrent flush can remove this draft while the request is in
       // flight. Put it back when the field still shows the failed value and
       // nobody has stored a newer draft. The saved log must still be the one
-      // this request started from, or the log this card itself just saved.
-      // Another card's newer save matches neither, so the old value stays gone.
+      // this request started from, or a value this card itself saved after
+      // the request started. Another card can write this card's older value
+      // back; that equal lastSaved is not this card's save, so it stays gone.
       const current = controls.payload();
       const savedSignature = savedExerciseLogSignature(activity.activity_id, current.exercise_id);
+      const savedByThisCardSinceRequest = ownSaveCount > ownSavesAtRequest && savedSignature === lastSaved;
       if (exerciseLogSignature(current) === signature
-          && (savedSignature === baselineAtRequest || savedSignature === lastSaved)
+          && (savedSignature === baselineAtRequest || savedByThisCardSinceRequest)
           && !readExerciseDraft(activity.activity_id, current.exercise_id)) {
         writeExerciseDraft(activity.activity_id, current, draftOwner);
       }

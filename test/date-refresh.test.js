@@ -1315,6 +1315,64 @@ test("a same-card overlap keeps the newer failed weight after the earlier save c
   }
 });
 
+test("a failed exercise save stays cleared when another card returns to this card's old value", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const { dom, window, calls } = openDateRefreshPage(state);
+  const gate = holdExerciseLogPosts(window, state, calls);
+  const savedWeight = () => state.active_plan.activities.find((item) => item.activity_id === "lower").exercise_logs?.activity?.weight_lbs;
+  try {
+    const { today, week } = await saveInitialLowerWeights(window, calls);
+    assert.equal(savedWeight(), "30");
+    const weekStatus = () => week.closest("form").querySelector(".autosave-status");
+
+    setWeight(window, today, "50");
+    today.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => savedWeight() === "50" && today.dataset.userEdited !== "true");
+    assert.equal(week.isConnected, true);
+
+    gate.hold(["10"]);
+    setWeight(window, week, "10");
+    week.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => gate.pending.some((entry) => entry.weight === "10"));
+    assert.equal(readLowerExerciseDraft(window)?.weight_lbs, "10");
+
+    setWeight(window, today, "30");
+    today.dispatchEvent(new window.Event("blur"));
+    await waitFor(() => savedWeight() === "30" && today.dataset.userEdited !== "true" && readLowerExerciseDraft(window) === null);
+    assert.equal(week.isConnected, true);
+    assert.equal(week.value, "10");
+
+    gate.release("10", false);
+    await waitFor(() => weekStatus().textContent === "Not saved");
+    assert.equal(week.value, "10");
+    assert.equal(readLowerExerciseDraft(window), null, "failed 10 was written back over the other card's later 30");
+    assert.equal(savedWeight(), "30");
+
+    gate.hold([]);
+    window.__failExerciseSaves = true;
+    const shown = await refreshLowerWeights(window);
+    assert.deepEqual(shown, { today: "30", week: "30" });
+    assert.equal(savedWeight(), "30");
+    assert.equal(readLowerExerciseDraft(window), null);
+
+    const postsBeforeHide = exerciseWeights(calls).length;
+    window.__failExerciseSaves = false;
+    await hideDashboard(window);
+    assert.equal(exerciseWeights(calls).length, postsBeforeHide);
+    assert.equal(savedWeight(), "30");
+    assert.equal(lowerWeightInput(window.document, "#today-list").value, "30");
+    assert.equal(lowerWeightInput(window.document, "#week-grid").value, "30");
+    assertNoDraftOwnerLeak(calls, window.document);
+  } finally {
+    gate.settleAll();
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
 test("a late change does not restore an older failed weight after another card saved", async () => {
   const previousTZ = process.env.TZ;
   process.env.TZ = "UTC";
