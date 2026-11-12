@@ -843,6 +843,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false });
       lastSaved = signature;
       clearExerciseDraft(activity.activity_id, payload.exercise_id);
+      clearSavedExerciseEdits(controls.inputs, payload);
       setAutosaveStatus(controls.status, "Saved", "is-saved");
       // Checking the box re-renders the whole dashboard. A midnight refresh
       // must not do that, or it would replace unsaved Goals and Coach Notes.
@@ -924,6 +925,7 @@ function attachFeedbackAutosave(form, activity) {
     try {
       await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false });
       lastSaved = signature;
+      clearSavedFeedbackEdits(form, currentPayload);
       const fresh = activities().find(a => a.activity_id === activity.activity_id);
       if (fresh) renderCoachingDetails(fresh, form.closest("article"));
       setAutosaveStatus(status, "Saved", "is-saved");
@@ -961,6 +963,30 @@ function attachFeedbackAutosave(form, activity) {
     event.preventDefault();
     await flushNow();
   });
+}
+
+function clearSavedFeedbackEdits(form, savedPayload) {
+  for (const name of ["difficulty", "back_pain", "notes", "actual_duration_minutes", "timing_status"]) {
+    const control = form.elements[name];
+    if (!control || control.dataset.userEdited !== "true") continue;
+    if (String(control.value) === String(savedPayload[name] ?? "")) delete control.dataset.userEdited;
+  }
+}
+
+function clearSavedExerciseEdits(inputs, savedPayload) {
+  const byName = new Map(inputs.map((input) => [input.name, input]));
+  for (const name of ["title", "weight_lbs", "sets", "reps"]) {
+    const control = byName.get(name);
+    if (!control || control.dataset.userEdited !== "true") continue;
+    if (String(control.value) === String(savedPayload[name] ?? "")) delete control.dataset.userEdited;
+  }
+  const value = byName.get("duration_value");
+  const unit = byName.get("duration_unit");
+  if (!value || !unit) return;
+  if (durationSeconds(value.value, unit.value) === String(savedPayload.duration_seconds ?? "")) {
+    delete value.dataset.userEdited;
+    delete unit.dataset.userEdited;
+  }
 }
 
 async function flushActiveAutosaves() {
@@ -1144,7 +1170,9 @@ function renderActivityActuals(activity) {
     form.append(label, button);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      await linkActivityActual(activity.activity_id, select.value);
+      const chosen = select.value;
+      await linkActivityActual(activity.activity_id, chosen);
+      if (select.isConnected && select.value === chosen) delete select.dataset.userEdited;
     });
     block.append(form);
   }
@@ -1256,6 +1284,7 @@ function renderActivity(activity, options = {}) {
     span.textContent = subtask.title;
     row.append(checkbox, span);
     if (loggable) {
+      row.dataset.exerciseId = subtask.subtask_id;
       row.append(createLibraryJumpButton(subtask.title));
       appendExerciseLogControls(row, activity, {
         exercise_id: subtask.subtask_id,
@@ -1323,10 +1352,15 @@ function renderActivity(activity, options = {}) {
     if (!checkbox) return;
     checkbox.dataset.userEdited = "true";
     await flushActiveAutosaves();
+    const submitted = checkbox.checked;
     await updateActivity(activity.activity_id, {
       subtask_id: checkbox.dataset.subtaskId,
-      completed: checkbox.checked
+      completed: submitted
     });
+    if (!checkbox.isConnected || checkbox.checked !== submitted) return;
+    const fresh = activities().find((item) => item.activity_id === activity.activity_id);
+    const saved = Boolean(fresh?.completion?.subtasks?.[checkbox.dataset.subtaskId]);
+    if (checkbox.checked === saved) delete checkbox.dataset.userEdited;
   });
 
   return node;
@@ -2685,9 +2719,10 @@ function preservedControlIdentity(control) {
   const subtaskId = control.dataset.subtaskId
     || row?.querySelector("[data-subtask-id]")?.dataset.subtaskId
     || "";
+  const exerciseId = row?.dataset.exerciseId || subtaskId;
   return [
     card?.dataset.activityId || "",
-    subtaskId,
+    exerciseId,
     control.getAttribute("name") || control.id || "",
     String(control.getAttribute("type") || control.tagName || "").toLowerCase()
   ].join("\u0000");
@@ -2718,38 +2753,33 @@ function durationSeconds(value, unit) {
 function snapshotPreservedControls(root, { onlyUserEdited = false } = {}) {
   if (!root) return [];
   const controls = [...root.querySelectorAll("input, textarea, select")].filter(isPreservedFormControl);
-  const included = new Set();
-  for (const control of controls) {
-    const pair = durationPairControls(control);
-    const pairEdited = pair && (pair.value.dataset.userEdited === "true" || pair.unit.dataset.userEdited === "true");
-    if (onlyUserEdited && control.dataset.userEdited !== "true" && !pairEdited) continue;
-    included.add(control);
-    // A duration is the number and the unit. Restoring only the number turns
-    // a saved 1.5 min (90 sec) back into 1.5 sec.
-    if (pairEdited) {
-      included.add(pair.value);
-      included.add(pair.unit);
-    }
-  }
-  const records = [];
   const seen = new Map();
-  for (const control of controls) {
-    if (!included.has(control)) continue;
+  const indexed = controls.map((control) => {
     const base = preservedControlIdentity(control);
     const index = seen.get(base) || 0;
     seen.set(base, index + 1);
-    const checkable = control.type === "checkbox" || control.type === "radio";
     const pair = durationPairControls(control);
-    records.push({
+    const checkable = control.type === "checkbox" || control.type === "radio";
+    return {
+      control,
       id: `${base}\u0000${index}`,
       value: control.value,
       checked: checkable ? control.checked : false,
       checkable,
       name: control.getAttribute("name") || "",
       pairKey: pair ? durationPairKey(control) : ""
-    });
+    };
+  });
+  if (!onlyUserEdited) return indexed.map(({ control, ...record }) => record);
+  const keep = new Set();
+  for (const item of indexed) {
+    const pair = durationPairControls(item.control);
+    // A duration is the number and the unit. Restoring only the number turns
+    // a saved 2.5 min (150 sec) back into 2.5 sec.
+    const pairEdited = pair && (pair.value.dataset.userEdited === "true" || pair.unit.dataset.userEdited === "true");
+    if (item.control.dataset.userEdited === "true" || pairEdited) keep.add(item.control);
   }
-  return records;
+  return indexed.filter((item) => keep.has(item.control)).map(({ control, ...record }) => record);
 }
 
 function restorePreservedControls(root, records) {
@@ -2783,8 +2813,8 @@ function restorePreservedControls(root, records) {
     if (!valueControl || !unitControl) continue;
     const shown = durationSeconds(valueControl.value, unitControl.value);
     const edited = durationSeconds(group.duration_value.value, group.duration_unit.value);
-    // The rebuilt card already shows this length, possibly as 90 sec instead
-    // of 1.5 min. Leave that canonical display in place.
+    // The rebuilt card already shows this length, possibly as 150 sec instead
+    // of 2.5 min. Leave that canonical display in place.
     if (shown === edited) continue;
     valueControl.value = group.duration_value.value;
     unitControl.value = group.duration_unit.value;
