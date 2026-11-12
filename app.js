@@ -840,9 +840,18 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     const signature = exerciseLogSignature(payload);
     if (signature === lastSaved) {
       // Editing away and back before the debounce fires leaves userEdited set
-      // on a value that already saved. Clear it only when nothing is in flight,
-      // so a date refresh does not copy it over a newer save from the other card.
-      if (requestsInFlight === 0) clearSavedExerciseEdits(controls.inputs, payload);
+      // on a value that already saved, and stores that value as the shared
+      // browser draft. Clear both only when nothing is in flight and the draft
+      // is this same value, so a date refresh does not rebuild both cards from
+      // a stale draft and save it over a newer log from the other card. A draft
+      // that still differs is unsaved and must stay.
+      if (requestsInFlight === 0) {
+        clearSavedExerciseEdits(controls.inputs, payload);
+        const stored = readExerciseDraft(activity.activity_id, payload.exercise_id);
+        if (stored && exerciseLogSignature(stored) === signature) {
+          clearExerciseDraft(activity.activity_id, payload.exercise_id);
+        }
+      }
       return;
     }
     requestsInFlight += 1;

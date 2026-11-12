@@ -792,3 +792,133 @@ test("reverting notes to the saved value does not overwrite a newer week save", 
     else process.env.TZ = previousTZ;
   }
 });
+
+function exerciseWeights(calls) {
+  return calls
+    .filter((call) => call.method === "POST" && call.url.includes("/exercise-log"))
+    .map((call) => String(JSON.parse(call.body).weight_lbs));
+}
+
+function openDateRefreshPage(state) {
+  const calls = [];
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, {
+    url: "http://127.0.0.1:4173/",
+    pretendToBeVisual: true,
+    runScripts: "outside-only"
+  });
+  const { window } = dom;
+  installClock(dom.getInternalVMContext(), Date.parse("2026-11-11T15:00:00Z"));
+  window.fetch = async (input, options = {}) => {
+    const url = String(input?.url || input);
+    const method = String(options.method || "GET").toUpperCase();
+    const body = options.body ? String(options.body) : "";
+    calls.push({ url, method, body });
+    const respond = (status, payload) => ({
+      status,
+      ok: status >= 200 && status < 300,
+      json: async () => payload
+    });
+    if (url.includes("/api/session")) return respond(200, { authenticated: true });
+    if (url.includes("/api/state")) return respond(200, state);
+    if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+    if (method === "POST" && url.includes("/exercise-log")) {
+      const payload = JSON.parse(body);
+      const activity = state.active_plan.activities.find((item) => item.activity_id === "lower");
+      activity.exercise_logs = { ...(activity.exercise_logs || {}), [payload.exercise_id]: payload };
+      return respond(200, state);
+    }
+    return respond(500, { error: "synthetic test does not save this write" });
+  };
+  loadPageScripts(dom.getInternalVMContext());
+  return { dom, window, calls };
+}
+
+test("reverting today's exercise weight after a week save does not overwrite that later weight", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const { dom, window, calls } = openDateRefreshPage(state);
+
+  try {
+    const { document } = window;
+    const weightInput = (root) => document.querySelector(`${root} article[data-activity-id='lower'] input[name='weight_lbs']`);
+    await waitFor(() => weightInput("#today-list") && weightInput("#week-grid"));
+    const todayWeight = weightInput("#today-list");
+    const weekWeight = weightInput("#week-grid");
+
+    typeInto(window, todayWeight, "10");
+    await waitFor(() => exerciseWeights(calls).includes("10") && todayWeight.dataset.userEdited !== "true");
+
+    typeInto(window, weekWeight, "30");
+    await waitFor(() => exerciseWeights(calls).includes("30") && weekWeight.dataset.userEdited !== "true");
+    assert.deepEqual(exerciseWeights(calls), ["10", "30"]);
+
+    todayWeight.value = "20";
+    todayWeight.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "20", inputType: "insertText" }));
+    todayWeight.value = "10";
+    todayWeight.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "10", inputType: "insertText" }));
+    assert.equal(todayWeight.value, "10");
+    assert.equal(todayWeight.dataset.userEdited, "true");
+    await waitFor(() => todayWeight.dataset.userEdited !== "true");
+    assert.equal(exerciseWeights(calls).includes("20"), false);
+    assert.deepEqual(exerciseWeights(calls), ["10", "30"]);
+    const postsBeforeRefresh = exerciseWeights(calls).length;
+
+    window.__setNow(Date.parse("2026-11-12T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector(".today-fallback-notice")
+      && weightInput("#today-list").value === "30"
+      && weightInput("#week-grid").value === "30");
+
+    window.__setNow(Date.parse("2026-11-13T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector("#date-label").textContent.includes("13")
+      && document.querySelector("#today-list h3")?.textContent === "Upper body");
+    assert.equal(weightInput("#week-grid").value, "30");
+    assert.deepEqual(exerciseWeights(calls).slice(postsBeforeRefresh).filter((weight) => weight === "10"), []);
+    assert.equal(exerciseWeights(calls).at(-1), "30");
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+test("an equal-signature exercise flush keeps a draft that is still ahead of the server", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const { dom, window, calls } = openDateRefreshPage(state);
+
+  try {
+    const { document } = window;
+    const todayWeight = () => document.querySelector("#today-list article[data-activity-id='lower'] input[name='weight_lbs']");
+    const weekWeight = () => document.querySelector("#week-grid article[data-activity-id='lower'] input[name='weight_lbs']");
+    await waitFor(() => todayWeight() && weekWeight());
+    assert.equal(todayWeight().closest("[data-exercise-id]").dataset.exerciseId, "activity");
+
+    typeInto(window, todayWeight(), "10");
+    await waitFor(() => exerciseWeights(calls).includes("10") && todayWeight().dataset.userEdited !== "true");
+
+    const currentToday = todayWeight();
+    const currentWeek = weekWeight();
+    currentWeek.value = "40";
+    currentWeek.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "40", inputType: "insertText" }));
+    currentToday.dispatchEvent(new window.Event("blur"));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const draftKey = "coach_loop_exercise_log_draft:lower:activity";
+    const stored = JSON.parse(window.localStorage.getItem(draftKey) || "null");
+    assert.equal(stored?.weight_lbs, "40");
+    assert.equal(exerciseWeights(calls).includes("40"), false);
+
+    await waitFor(() => exerciseWeights(calls).includes("40"));
+    assert.equal(exerciseWeights(calls).at(-1), "40");
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
