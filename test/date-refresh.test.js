@@ -544,3 +544,251 @@ test("a failed workout-note save stays on screen after a date refresh", async ()
     else process.env.TZ = previousTZ;
   }
 });
+
+function mobilityState() {
+  const state = pageFixture();
+  state.active_plan.activities = [{
+    activity_id: "mobility",
+    date: "2026-11-11",
+    title: "Mobility",
+    type: "strength",
+    required_or_optional: "required",
+    completion: { completed: false },
+    subtasks: []
+  }];
+  return state;
+}
+
+function durationPosts(calls) {
+  return calls
+    .filter((call) => call.method === "POST" && call.url.includes("/exercise-log"))
+    .map((call) => JSON.parse(call.body));
+}
+
+test("standalone exercise-log 2.5 min keeps its unit when the save fails", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = mobilityState();
+  const calls = [];
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, {
+    url: "http://127.0.0.1:4173/",
+    pretendToBeVisual: true,
+    runScripts: "outside-only"
+  });
+  const { window } = dom;
+
+  try {
+    installClock(dom.getInternalVMContext(), Date.parse("2026-11-11T15:00:00Z"));
+    window.fetch = async (input, options = {}) => {
+      const url = String(input?.url || input);
+      const method = String(options.method || "GET").toUpperCase();
+      const body = options.body ? String(options.body) : "";
+      calls.push({ url, method, body });
+      const respond = (status, payload) => ({
+        status,
+        ok: status >= 200 && status < 300,
+        json: async () => payload
+      });
+      if (url.includes("/api/session")) return respond(200, { authenticated: true });
+      if (url.includes("/api/state")) return respond(200, state);
+      if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+      return respond(500, { error: "synthetic test does not save this write" });
+    };
+    loadPageScripts(dom.getInternalVMContext());
+
+    const { document } = window;
+    await waitFor(() => document.querySelector("#today-list .exercise-log-row input[name='duration_value']"));
+    const row = document.querySelector("#today-list .exercise-log-row");
+    assert.equal(row.dataset.exerciseId, "activity");
+    assert.equal(document.querySelector("#today-list .subtask-row"), null);
+    const duration = row.querySelector("input[name='duration_value']");
+    const unit = row.querySelector("select[name='duration_unit']");
+    assert.equal(unit.value, "min");
+    duration.value = "2.5";
+    duration.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "2.5", inputType: "insertText" }));
+
+    window.__setNow(Date.parse("2026-11-12T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector(".today-fallback-notice")
+      && document.querySelector("#today-list .exercise-log-row input[name='duration_value']"));
+
+    for (const rootId of ["#today-list", "#week-grid"]) {
+      const shownValue = document.querySelector(`${rootId} .exercise-log-row input[name='duration_value']`).value;
+      const shownUnit = document.querySelector(`${rootId} .exercise-log-row select[name='duration_unit']`).value;
+      assert.equal(shownSeconds(shownValue, shownUnit), "150", `${rootId} showed ${shownValue} ${shownUnit}`);
+      assert.notEqual(`${shownValue} ${shownUnit}`, "2.5 sec");
+    }
+
+    const postsBeforeLaterFlush = durationPosts(calls).length;
+    window.__setNow(Date.parse("2026-11-13T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector("#date-label").textContent.includes("13")
+      && durationPosts(calls).length > postsBeforeLaterFlush);
+    const logged = durationPosts(calls);
+    assert.ok(logged.length > postsBeforeLaterFlush);
+    assert.equal(logged.every((entry) => entry.exercise_id === "activity" && entry.duration_seconds === "150"), true);
+    assert.equal(logged.some((entry) => entry.duration_seconds === "3"), false);
+    assert.equal(shownSeconds(
+      document.querySelector("#today-list .exercise-log-row input[name='duration_value']").value,
+      document.querySelector("#today-list .exercise-log-row select[name='duration_unit']").value
+    ), "150");
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+function linkChoiceState() {
+  const state = pageFixture();
+  const activity = state.active_plan.activities.find((item) => item.activity_id === "lower");
+  activity.actuals = [];
+  activity.actual_match_candidates = [
+    { actual_id: "actual-easy", name: "Easy run", type: "run", duration_minutes: 30, linked: false },
+    { actual_id: "actual-strength", name: "Strength session", type: "lift", duration_minutes: 40, linked: false }
+  ];
+  return state;
+}
+
+test("a failed actual-link keeps the unsaved choice across a date refresh", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = linkChoiceState();
+  const calls = [];
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, {
+    url: "http://127.0.0.1:4173/",
+    pretendToBeVisual: true,
+    runScripts: "outside-only"
+  });
+  const { window } = dom;
+
+  try {
+    installClock(dom.getInternalVMContext(), Date.parse("2026-11-11T15:00:00Z"));
+    window.fetch = async (input, options = {}) => {
+      const url = String(input?.url || input);
+      const method = String(options.method || "GET").toUpperCase();
+      const body = options.body ? String(options.body) : "";
+      calls.push({ url, method, body });
+      const respond = (status, payload) => ({
+        status,
+        ok: status >= 200 && status < 300,
+        json: async () => payload
+      });
+      if (url.includes("/api/session")) return respond(200, { authenticated: true });
+      if (url.includes("/api/state")) return respond(200, state);
+      if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+      return respond(500, { error: "synthetic test does not save this write" });
+    };
+    loadPageScripts(dom.getInternalVMContext());
+
+    const { document } = window;
+    await waitFor(() => document.querySelector("#today-list select[name='actual_id']"));
+    const form = document.querySelector("#today-list .actual-link-form");
+    const select = form.querySelector("select[name='actual_id']");
+    assert.equal(select.value, "");
+    select.value = "actual-strength";
+    select.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.equal(select.dataset.userEdited, "true");
+    form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+
+    await waitFor(() => document.querySelector("#message")?.textContent.includes("synthetic test does not save this write"));
+    assert.equal(select.isConnected, true);
+    assert.equal(select.value, "actual-strength");
+    assert.equal(select.dataset.userEdited, "true");
+    assert.equal(calls.some((call) => call.method === "POST" && call.url.includes("/actual-link") && call.body.includes("actual-strength")), true);
+
+    window.__setNow(Date.parse("2026-11-12T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector(".today-fallback-notice")
+      && document.querySelector("#today-list select[name='actual_id']"));
+    assert.equal(document.querySelector("#today-list select[name='actual_id']").value, "actual-strength");
+    assert.equal(document.querySelector("#today-list select[name='actual_id']").dataset.userEdited, "true");
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+test("reverting notes to the saved value does not overwrite a newer week save", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageFixture();
+  const calls = [];
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, {
+    url: "http://127.0.0.1:4173/",
+    pretendToBeVisual: true,
+    runScripts: "outside-only"
+  });
+  const { window } = dom;
+
+  try {
+    installClock(dom.getInternalVMContext(), Date.parse("2026-11-11T15:00:00Z"));
+    window.fetch = async (input, options = {}) => {
+      const url = String(input?.url || input);
+      const method = String(options.method || "GET").toUpperCase();
+      const body = options.body ? String(options.body) : "";
+      calls.push({ url, method, body });
+      const respond = (status, payload) => ({
+        status,
+        ok: status >= 200 && status < 300,
+        json: async () => payload
+      });
+      if (url.includes("/api/session")) return respond(200, { authenticated: true });
+      if (url.includes("/api/state")) return respond(200, state);
+      if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+      if (method === "POST" && url.includes("/feedback")) {
+        const payload = JSON.parse(body);
+        const activity = state.active_plan.activities.find((item) => item.activity_id === "lower");
+        activity.feedback = { ...(activity.feedback || {}), ...payload };
+        return respond(200, state);
+      }
+      return respond(500, { error: "synthetic test does not save this write" });
+    };
+    loadPageScripts(dom.getInternalVMContext());
+
+    const { document } = window;
+    await waitFor(() => document.querySelector("#today-list textarea[name='notes']")
+      && document.querySelector("#week-grid article[data-activity-id='lower'] textarea[name='notes']"));
+    const todayNotes = document.querySelector("#today-list textarea[name='notes']");
+    const weekNotes = document.querySelector("#week-grid article[data-activity-id='lower'] textarea[name='notes']");
+    typeInto(window, todayNotes, "Notes A");
+    await waitFor(() => feedbackNotes(calls).includes("Notes A") && todayNotes.dataset.userEdited !== "true");
+
+    todayNotes.value = "Notes X";
+    todayNotes.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "Notes X", inputType: "insertText" }));
+    todayNotes.value = "Notes A";
+    todayNotes.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "Notes A", inputType: "insertText" }));
+    assert.equal(todayNotes.dataset.userEdited, "true");
+    await waitFor(() => todayNotes.dataset.userEdited !== "true");
+    assert.equal(todayNotes.value, "Notes A");
+    assert.equal(feedbackNotes(calls).includes("Notes X"), false);
+
+    typeInto(window, weekNotes, "Notes B");
+    await waitFor(() => feedbackNotes(calls).includes("Notes B") && weekNotes.dataset.userEdited !== "true");
+    assert.equal(todayNotes.value, "Notes A");
+    const postsBeforeRefresh = feedbackNotes(calls).length;
+
+    window.__setNow(Date.parse("2026-11-12T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector("#today-list textarea[name='notes']").value === "Notes B"
+      && document.querySelector("#week-grid article[data-activity-id='lower'] textarea[name='notes']").value === "Notes B");
+
+    window.__setNow(Date.parse("2026-11-13T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector("#date-label").textContent.includes("13")
+      && document.querySelector("#today-list h3")?.textContent === "Upper body");
+    assert.equal(document.querySelector("#week-grid article[data-activity-id='lower'] textarea[name='notes']").value, "Notes B");
+    assert.deepEqual(feedbackNotes(calls).slice(postsBeforeRefresh).filter((note) => note === "Notes A"), []);
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});

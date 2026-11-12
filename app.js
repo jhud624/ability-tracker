@@ -792,6 +792,7 @@ function exerciseLogHasData(payload) {
 
 function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog = {}) {
   let timer = null;
+  let requestsInFlight = 0;
   const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
   const hasSavedLog = Object.keys(savedLog || {}).length > 0;
   // A newly rendered empty row has a title even when the user has not entered
@@ -837,7 +838,14 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   async function flushAutosave() {
     const payload = controls.payload();
     const signature = exerciseLogSignature(payload);
-    if (signature === lastSaved) return;
+    if (signature === lastSaved) {
+      // Editing away and back before the debounce fires leaves userEdited set
+      // on a value that already saved. Clear it only when nothing is in flight,
+      // so a date refresh does not copy it over a newer save from the other card.
+      if (requestsInFlight === 0) clearSavedExerciseEdits(controls.inputs, payload);
+      return;
+    }
+    requestsInFlight += 1;
     setAutosaveStatus(controls.status, "Saving...", "is-saving");
     try {
       await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false });
@@ -850,6 +858,8 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       if (exerciseLogHasData(payload) && !dateRefreshInProgress) queueAutoComplete();
     } catch (error) {
       setAutosaveStatus(controls.status, "Not saved", "is-error");
+    } finally {
+      requestsInFlight -= 1;
     }
   }
 
@@ -915,12 +925,20 @@ function attachFeedbackAutosave(form, activity) {
   }
 
   let timer = null;
+  let requestsInFlight = 0;
   let lastSaved = feedbackSignature(payload());
 
   async function flushAutosave() {
     const currentPayload = payload();
     const signature = feedbackSignature(currentPayload);
-    if (signature === lastSaved) return;
+    if (signature === lastSaved) {
+      // Editing away and back before the debounce fires leaves userEdited set
+      // on a value that already saved. Clear it only when nothing is in flight,
+      // so a date refresh does not copy it over a newer save from the other card.
+      if (requestsInFlight === 0) clearSavedFeedbackEdits(form, currentPayload);
+      return;
+    }
+    requestsInFlight += 1;
     setAutosaveStatus(status, "Saving...", "is-saving");
     try {
       await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false });
@@ -931,6 +949,8 @@ function attachFeedbackAutosave(form, activity) {
       setAutosaveStatus(status, "Saved", "is-saved");
     } catch {
       setAutosaveStatus(status, "Not saved", "is-error");
+    } finally {
+      requestsInFlight -= 1;
     }
   }
 
@@ -1171,8 +1191,12 @@ function renderActivityActuals(activity) {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const chosen = select.value;
-      await linkActivityActual(activity.activity_id, chosen);
-      if (select.isConnected && select.value === chosen) delete select.dataset.userEdited;
+      try {
+        const linked = await linkActivityActual(activity.activity_id, chosen);
+        if (linked && select.isConnected && select.value === chosen) delete select.dataset.userEdited;
+      } catch {
+        // The choice did not save. Leave userEdited so a date refresh keeps it.
+      }
     });
     block.append(form);
   }
@@ -2428,8 +2452,10 @@ async function linkActivityActual(activityId, actualId) {
     render();
     await refreshCoachSummary();
     setMessage(actualId ? "Actual linked." : "Actual link cleared.");
+    return true;
   } catch (error) {
     setMessage(error.message, true);
+    throw error;
   }
 }
 
@@ -2713,13 +2739,22 @@ function isPreservedFormControl(control) {
   return !["button", "submit", "reset", "image", "file"].includes(type);
 }
 
-function preservedControlIdentity(control) {
-  const card = control.closest("[data-activity-id]");
-  const row = control.closest(".subtask-row, .feedback-grid, .actual-link-form");
+function preservedControlRow(control) {
+  return control.closest(".subtask-row, .exercise-log-row, .feedback-grid, .actual-link-form");
+}
+
+function preservedExerciseId(control) {
+  const row = preservedControlRow(control);
   const subtaskId = control.dataset.subtaskId
     || row?.querySelector("[data-subtask-id]")?.dataset.subtaskId
     || "";
-  const exerciseId = row?.dataset.exerciseId || subtaskId;
+  // Subtask rows and standalone exercise-log rows both set data-exercise-id.
+  return row?.dataset.exerciseId || subtaskId;
+}
+
+function preservedControlIdentity(control) {
+  const card = control.closest("[data-activity-id]");
+  const exerciseId = preservedExerciseId(control);
   return [
     card?.dataset.activityId || "",
     exerciseId,
@@ -2729,7 +2764,7 @@ function preservedControlIdentity(control) {
 }
 
 function durationPairControls(control) {
-  const row = control.closest(".subtask-row");
+  const row = control.closest(".subtask-row, .exercise-log-row");
   if (!row) return null;
   const value = row.querySelector('input[name="duration_value"]');
   const unit = row.querySelector('select[name="duration_unit"]');
@@ -2739,8 +2774,7 @@ function durationPairControls(control) {
 
 function durationPairKey(control) {
   const card = control.closest("[data-activity-id]");
-  const subtaskId = control.closest(".subtask-row")?.querySelector("[data-subtask-id]")?.dataset.subtaskId || "";
-  return `${card?.dataset.activityId || ""}\u0000${subtaskId}`;
+  return `${card?.dataset.activityId || ""}\u0000${preservedExerciseId(control)}`;
 }
 
 function durationSeconds(value, unit) {
