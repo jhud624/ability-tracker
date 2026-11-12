@@ -77,6 +77,7 @@ const elements = {
 let unlockResolver = null;
 const EXERCISE_DRAFT_PREFIX = "coach_loop_exercise_log_draft:";
 const activeAutosaveFlushers = new Set();
+let dateRefreshInProgress = false;
 // Per-card expand/collapse override in the Week view. Unset = default
 // (today's workout expanded, everything else collapsed).
 const weekCardExpanded = new Map();
@@ -164,8 +165,7 @@ function formatDate(value, options = {}) {
 }
 
 function todayKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return localDateKey();
 }
 
 function dateKeyFromDate(date) {
@@ -598,12 +598,47 @@ function readExerciseDraft(activityId, exerciseId) {
   }
 }
 
-function writeExerciseDraft(activityId, payload) {
+let exerciseDraftOwnerSeq = 0;
+
+function nextExerciseDraftOwner() {
+  exerciseDraftOwnerSeq += 1;
+  return `card-${exerciseDraftOwnerSeq}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function writeExerciseDraft(activityId, payload, owner) {
   try {
-    window.localStorage.setItem(exerciseDraftKey(activityId, payload.exercise_id), JSON.stringify(payload));
+    // draft_owner records which card wrote this shared draft. It stays in
+    // local storage only; exercise saves post controls.payload(), not this record.
+    const record = owner ? { ...payload, draft_owner: owner } : { ...payload };
+    window.localStorage.setItem(exerciseDraftKey(activityId, payload.exercise_id), JSON.stringify(record));
   } catch {
     // Drafting is a fallback for flaky mobile saves; failed storage should not block entry.
   }
+}
+
+function exerciseDraftFields(draft) {
+  if (!draft || typeof draft !== "object") return {};
+  const { draft_owner, ...fields } = draft;
+  return fields;
+}
+
+function savedExerciseLogSignature(activityId, exerciseId) {
+  const activity = activities().find((item) => item.activity_id === activityId);
+  const saved = activity?.exercise_logs?.[exerciseId];
+  if (!saved || typeof saved !== "object" || !Object.keys(saved).length) return null;
+  return exerciseLogSignature(saved);
+}
+
+// The shared draft may belong to the other copy of this exercise. An
+// equal-signature flush may drop it when this card wrote it — the user
+// returned to this card's own baseline — or when it already matches the saved
+// log. Another card's unsaved value can equal this card's stale baseline and
+// must stay so a reload can restore it.
+function shouldClearRevertedExerciseDraft(activityId, exerciseId, stored, signature, owner) {
+  if (!stored || exerciseLogSignature(stored) !== signature) return false;
+  if (stored.draft_owner && stored.draft_owner === owner) return true;
+  const savedSignature = savedExerciseLogSignature(activityId, exerciseId);
+  return savedSignature !== null && savedSignature === signature;
 }
 
 function clearExerciseDraft(activityId, exerciseId) {
@@ -792,6 +827,8 @@ function exerciseLogHasData(payload) {
 
 function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog = {}) {
   let timer = null;
+  let requestsInFlight = 0;
+  const draftOwner = nextExerciseDraftOwner();
   const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
   const hasSavedLog = Object.keys(savedLog || {}).length > 0;
   // A newly rendered empty row has a title even when the user has not entered
@@ -799,6 +836,22 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   // flushing does not manufacture a blank exercise log. Preserve draft recovery
   // and real saved-log comparisons.
   let lastSaved = exerciseLogSignature(!hasSavedLog && !draft ? controls.payload() : savedLog);
+  // Counts successful saves from this card only. A failed request may see a
+  // saved log equal to lastSaved because another card wrote this card's older
+  // value; that match is not a save this card made after the request started.
+  let ownSaveCount = 0;
+  // Snapshot the saved log when the user edits, not when the request returns.
+  // A failed save may find the shared draft gone because a newer save cleared
+  // it. That empty slot is not a reason to write the older value back.
+  // baselinePayloadSignature is the field value that snapshot belongs to. A
+  // later change of that same value is the field committing, not a new edit.
+  let savedSignatureAtEdit = savedExerciseLogSignature(activity.activity_id, exercise.exercise_id);
+  let baselinePayloadSignature = exerciseLogSignature(controls.payload());
+
+  function noteEditBaseline() {
+    savedSignatureAtEdit = savedExerciseLogSignature(activity.activity_id, exercise.exercise_id);
+    baselinePayloadSignature = exerciseLogSignature(controls.payload());
+  }
 
   function completeRowSubtask() {
     const checkbox = row.querySelector('input[type="checkbox"][data-subtask-id]');
@@ -837,21 +890,61 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   async function flushAutosave() {
     const payload = controls.payload();
     const signature = exerciseLogSignature(payload);
-    if (signature === lastSaved) return;
+    if (signature === lastSaved) {
+      // Editing away and back before the debounce fires leaves userEdited set
+      // on a value that already saved, and stores that value as the shared
+      // browser draft. Clear that mark when nothing is in flight. Clear the
+      // draft only when this card wrote it, or it already matches the saved
+      // log. Another card can be holding the same numbers as an unsaved edit.
+      if (requestsInFlight === 0) {
+        clearSavedExerciseEdits(controls.inputs, payload);
+        const stored = readExerciseDraft(activity.activity_id, payload.exercise_id);
+        if (shouldClearRevertedExerciseDraft(activity.activity_id, payload.exercise_id, stored, signature, draftOwner)) {
+          clearExerciseDraft(activity.activity_id, payload.exercise_id);
+        }
+      }
+      return;
+    }
+    requestsInFlight += 1;
     setAutosaveStatus(controls.status, "Saving...", "is-saving");
+    // This card can have two saves in flight. Freeze the edit-time baseline
+    // and this card's own success count so a later edit cannot move the check.
+    const baselineAtRequest = savedSignatureAtEdit;
+    const ownSavesAtRequest = ownSaveCount;
     try {
       await saveExerciseLog(activity.activity_id, payload, { silent: true, rerender: false });
+      ownSaveCount += 1;
       lastSaved = signature;
       clearExerciseDraft(activity.activity_id, payload.exercise_id);
+      clearSavedExerciseEdits(controls.inputs, payload);
       setAutosaveStatus(controls.status, "Saved", "is-saved");
-      if (exerciseLogHasData(payload)) queueAutoComplete();
+      // Checking the box re-renders the whole dashboard. A midnight refresh
+      // must not do that, or it would replace unsaved Goals and Coach Notes.
+      if (exerciseLogHasData(payload) && !dateRefreshInProgress) queueAutoComplete();
     } catch (error) {
       setAutosaveStatus(controls.status, "Not saved", "is-error");
+      // A concurrent flush can remove this draft while the request is in
+      // flight. Put it back when the field still shows the failed value and
+      // nobody has stored a newer draft. The saved log must still be the one
+      // this request started from, or a value this card itself saved after
+      // the request started. Another card can write this card's older value
+      // back; that equal lastSaved is not this card's save, so it stays gone.
+      const current = controls.payload();
+      const savedSignature = savedExerciseLogSignature(activity.activity_id, current.exercise_id);
+      const savedByThisCardSinceRequest = ownSaveCount > ownSavesAtRequest && savedSignature === lastSaved;
+      if (exerciseLogSignature(current) === signature
+          && (savedSignature === baselineAtRequest || savedByThisCardSinceRequest)
+          && !readExerciseDraft(activity.activity_id, current.exercise_id)) {
+        writeExerciseDraft(activity.activity_id, current, draftOwner);
+      }
+    } finally {
+      requestsInFlight -= 1;
     }
   }
 
   function saveDraftAndUpdate() {
-    writeExerciseDraft(activity.activity_id, controls.payload());
+    noteEditBaseline();
+    writeExerciseDraft(activity.activity_id, controls.payload(), draftOwner);
     controls.updateTotal();
   }
 
@@ -868,10 +961,18 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   activeAutosaveFlushers.add(flushNow);
   controls.inputs.forEach((input) => {
     input.addEventListener("input", () => {
+      input.dataset.userEdited = "true";
       saveDraftAndUpdate();
       scheduleAutosave();
     });
-    input.addEventListener("change", () => scheduleAutosave(0));
+    input.addEventListener("change", () => {
+      input.dataset.userEdited = "true";
+      // Typing already snapshotted this value. Change fires again when the
+      // field commits, sometimes after another card has saved. Retaking the
+      // baseline then would treat that newer save as the value's starting point.
+      if (exerciseLogSignature(controls.payload()) !== baselinePayloadSignature) noteEditBaseline();
+      scheduleAutosave(0);
+    });
     input.addEventListener("blur", () => scheduleAutosave(0));
   });
 
@@ -908,21 +1009,32 @@ function attachFeedbackAutosave(form, activity) {
   }
 
   let timer = null;
+  let requestsInFlight = 0;
   let lastSaved = feedbackSignature(payload());
 
   async function flushAutosave() {
     const currentPayload = payload();
     const signature = feedbackSignature(currentPayload);
-    if (signature === lastSaved) return;
+    if (signature === lastSaved) {
+      // Editing away and back before the debounce fires leaves userEdited set
+      // on a value that already saved. Clear it only when nothing is in flight,
+      // so a date refresh does not copy it over a newer save from the other card.
+      if (requestsInFlight === 0) clearSavedFeedbackEdits(form, currentPayload);
+      return;
+    }
+    requestsInFlight += 1;
     setAutosaveStatus(status, "Saving...", "is-saving");
     try {
       await saveFeedback(activity.activity_id, currentPayload, { silent: true, rerender: false });
       lastSaved = signature;
+      clearSavedFeedbackEdits(form, currentPayload);
       const fresh = activities().find(a => a.activity_id === activity.activity_id);
       if (fresh) renderCoachingDetails(fresh, form.closest("article"));
       setAutosaveStatus(status, "Saved", "is-saved");
     } catch {
       setAutosaveStatus(status, "Not saved", "is-error");
+    } finally {
+      requestsInFlight -= 1;
     }
   }
 
@@ -941,14 +1053,44 @@ function attachFeedbackAutosave(form, activity) {
   ["difficulty", "back_pain", "notes", "actual_duration_minutes", "timing_status"].forEach((field) => {
     const input = form.elements[field];
     if (!input) return;
-    input.addEventListener("input", () => scheduleAutosave());
-    input.addEventListener("change", () => scheduleAutosave(0));
+    input.addEventListener("input", () => {
+      input.dataset.userEdited = "true";
+      scheduleAutosave();
+    });
+    input.addEventListener("change", () => {
+      input.dataset.userEdited = "true";
+      scheduleAutosave(0);
+    });
   });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     await flushNow();
   });
+}
+
+function clearSavedFeedbackEdits(form, savedPayload) {
+  for (const name of ["difficulty", "back_pain", "notes", "actual_duration_minutes", "timing_status"]) {
+    const control = form.elements[name];
+    if (!control || control.dataset.userEdited !== "true") continue;
+    if (String(control.value) === String(savedPayload[name] ?? "")) delete control.dataset.userEdited;
+  }
+}
+
+function clearSavedExerciseEdits(inputs, savedPayload) {
+  const byName = new Map(inputs.map((input) => [input.name, input]));
+  for (const name of ["title", "weight_lbs", "sets", "reps"]) {
+    const control = byName.get(name);
+    if (!control || control.dataset.userEdited !== "true") continue;
+    if (String(control.value) === String(savedPayload[name] ?? "")) delete control.dataset.userEdited;
+  }
+  const value = byName.get("duration_value");
+  const unit = byName.get("duration_unit");
+  if (!value || !unit) return;
+  if (durationSeconds(value.value, unit.value) === String(savedPayload.duration_seconds ?? "")) {
+    delete value.dataset.userEdited;
+    delete unit.dataset.userEdited;
+  }
 }
 
 async function flushActiveAutosaves() {
@@ -1016,7 +1158,7 @@ function renderExerciseLogs(activity, container) {
   exerciseRows(activity).forEach((exercise) => {
     const savedLog = logs[exercise.exercise_id] || {};
     const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
-    const log = { ...savedLog, ...(draft || {}) };
+    const log = { ...savedLog, ...exerciseDraftFields(draft) };
     const row = document.createElement("form");
     row.className = "exercise-log-row";
     row.dataset.exerciseId = exercise.exercise_id;
@@ -1040,7 +1182,7 @@ function appendExerciseLogControls(row, activity, exercise) {
   const savedLog = activity.exercise_logs?.[exercise.exercise_id] || {};
   const log = {
     ...savedLog,
-    ...(draft || {})
+    ...exerciseDraftFields(draft)
   };
   const controls = createExerciseLogControls(activity, exercise, log);
   attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);
@@ -1122,6 +1264,9 @@ function renderActivityActuals(activity) {
       select.append(option);
     });
     label.append(select);
+    select.addEventListener("change", () => {
+      select.dataset.userEdited = "true";
+    });
     const button = document.createElement("button");
     button.className = "ghost-button";
     button.type = "submit";
@@ -1129,7 +1274,13 @@ function renderActivityActuals(activity) {
     form.append(label, button);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      await linkActivityActual(activity.activity_id, select.value);
+      const chosen = select.value;
+      try {
+        const linked = await linkActivityActual(activity.activity_id, chosen);
+        if (linked && select.isConnected && select.value === chosen) delete select.dataset.userEdited;
+      } catch {
+        // The choice did not save. Leave userEdited so a date refresh keeps it.
+      }
     });
     block.append(form);
   }
@@ -1241,6 +1392,7 @@ function renderActivity(activity, options = {}) {
     span.textContent = subtask.title;
     row.append(checkbox, span);
     if (loggable) {
+      row.dataset.exerciseId = subtask.subtask_id;
       row.append(createLibraryJumpButton(subtask.title));
       appendExerciseLogControls(row, activity, {
         exercise_id: subtask.subtask_id,
@@ -1306,34 +1458,54 @@ function renderActivity(activity, options = {}) {
   subtaskList.addEventListener("change", async (event) => {
     const checkbox = event.target.closest("[data-subtask-id]");
     if (!checkbox) return;
+    checkbox.dataset.userEdited = "true";
     await flushActiveAutosaves();
+    const submitted = checkbox.checked;
     await updateActivity(activity.activity_id, {
       subtask_id: checkbox.dataset.subtaskId,
-      completed: checkbox.checked
+      completed: submitted
     });
+    if (!checkbox.isConnected || checkbox.checked !== submitted) return;
+    const fresh = activities().find((item) => item.activity_id === activity.activity_id);
+    const saved = Boolean(fresh?.completion?.subtasks?.[checkbox.dataset.subtaskId]);
+    if (checkbox.checked === saved) delete checkbox.dataset.userEdited;
   });
 
   return node;
 }
 
-function todaysList() {
-  const key = todayKey();
-  const todaysActivities = activities().filter((activity) => activity.date === key);
-  const overrideActivity = activities().find((activity) => activity.activity_id === state.todayOverrideActivityId);
-  const fallback = activities().find((activity) => !activity.completion?.completed);
-  return overrideActivity ? [overrideActivity] : todaysActivities.length ? todaysActivities : fallback ? [fallback] : [];
+function todaysView(key = todayKey()) {
+  return selectTodaysView({ activities: activities(), todayKey: key, overrideActivityId: state.todayOverrideActivityId });
 }
+
+function todaysList() {
+  return todaysView().activities;
+}
+
+let lastRenderedTodayDateKey = null;
 
 function renderToday() {
   const key = todayKey();
-  const list = todaysList();
+  const view = todaysView(key);
+  const list = view.activities;
+  lastRenderedTodayDateKey = key;
 
   elements.todayList.innerHTML = "";
   renderTodaySwitcher();
   if (!list.length) {
-    elements.todayList.innerHTML = `<div class="empty-state">No activities are scheduled yet. Import a weekly plan to get started.</div>`;
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = todayEmptyCopy(view.mode);
+    elements.todayList.append(empty);
     elements.completeWorkout.hidden = true;
     return;
+  }
+  const notice = todayFallbackNotice({ mode: view.mode, activity: list[0], formatDate });
+  if (notice) {
+    const line = document.createElement("p");
+    line.className = "today-fallback-notice";
+    line.textContent = notice;
+    elements.todayList.append(line);
   }
   list.forEach((activity) => elements.todayList.append(renderActivity(activity, { loggedDate: key })));
 
@@ -1348,7 +1520,7 @@ function renderTodaySwitcher() {
   const key = todayKey();
   const switchableActivities = activities()
     .filter((activity) => !activity.completion?.completed && activity.date !== key)
-    .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
+    .sort(compareActivitiesByDateThenTitle);
 
   elements.todaySwitchSelect.innerHTML = "";
   const placeholder = document.createElement("option");
@@ -2364,8 +2536,10 @@ async function linkActivityActual(activityId, actualId) {
     render();
     await refreshCoachSummary();
     setMessage(actualId ? "Actual linked." : "Actual link cleared.");
+    return true;
   } catch (error) {
     setMessage(error.message, true);
+    throw error;
   }
 }
 
@@ -2644,8 +2818,181 @@ async function requestWakeLock() {
   }
 }
 
+function isPreservedFormControl(control) {
+  const type = String(control.getAttribute("type") || control.type || "").toLowerCase();
+  return !["button", "submit", "reset", "image", "file"].includes(type);
+}
+
+function preservedControlRow(control) {
+  return control.closest(".subtask-row, .exercise-log-row, .feedback-grid, .actual-link-form");
+}
+
+function preservedExerciseId(control) {
+  const row = preservedControlRow(control);
+  const subtaskId = control.dataset.subtaskId
+    || row?.querySelector("[data-subtask-id]")?.dataset.subtaskId
+    || "";
+  // Subtask rows and standalone exercise-log rows both set data-exercise-id.
+  return row?.dataset.exerciseId || subtaskId;
+}
+
+function preservedControlIdentity(control) {
+  const card = control.closest("[data-activity-id]");
+  const exerciseId = preservedExerciseId(control);
+  return [
+    card?.dataset.activityId || "",
+    exerciseId,
+    control.getAttribute("name") || control.id || "",
+    String(control.getAttribute("type") || control.tagName || "").toLowerCase()
+  ].join("\u0000");
+}
+
+function durationPairControls(control) {
+  const row = control.closest(".subtask-row, .exercise-log-row");
+  if (!row) return null;
+  const value = row.querySelector('input[name="duration_value"]');
+  const unit = row.querySelector('select[name="duration_unit"]');
+  if (!value || !unit || (control !== value && control !== unit)) return null;
+  return { value, unit };
+}
+
+function durationPairKey(control) {
+  const card = control.closest("[data-activity-id]");
+  return `${card?.dataset.activityId || ""}\u0000${preservedExerciseId(control)}`;
+}
+
+function durationSeconds(value, unit) {
+  if (value === "" || value == null) return "";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  return String(Math.round(number * (unit === "min" ? 60 : 1)));
+}
+
+function snapshotPreservedControls(root, { onlyUserEdited = false } = {}) {
+  if (!root) return [];
+  const controls = [...root.querySelectorAll("input, textarea, select")].filter(isPreservedFormControl);
+  const seen = new Map();
+  const indexed = controls.map((control) => {
+    const base = preservedControlIdentity(control);
+    const index = seen.get(base) || 0;
+    seen.set(base, index + 1);
+    const pair = durationPairControls(control);
+    const checkable = control.type === "checkbox" || control.type === "radio";
+    return {
+      control,
+      id: `${base}\u0000${index}`,
+      value: control.value,
+      checked: checkable ? control.checked : false,
+      checkable,
+      name: control.getAttribute("name") || "",
+      pairKey: pair ? durationPairKey(control) : ""
+    };
+  });
+  if (!onlyUserEdited) return indexed.map(({ control, ...record }) => record);
+  const keep = new Set();
+  for (const item of indexed) {
+    const pair = durationPairControls(item.control);
+    // A duration is the number and the unit. Restoring only the number turns
+    // a saved 2.5 min (150 sec) back into 2.5 sec.
+    const pairEdited = pair && (pair.value.dataset.userEdited === "true" || pair.unit.dataset.userEdited === "true");
+    if (item.control.dataset.userEdited === "true" || pairEdited) keep.add(item.control);
+  }
+  return indexed.filter((item) => keep.has(item.control)).map(({ control, ...record }) => record);
+}
+
+function restorePreservedControls(root, records) {
+  if (!root || !records.length) return;
+  const seen = new Map();
+  const byId = new Map();
+  for (const control of root.querySelectorAll("input, textarea, select")) {
+    if (!isPreservedFormControl(control)) continue;
+    const base = preservedControlIdentity(control);
+    const index = seen.get(base) || 0;
+    seen.set(base, index + 1);
+    byId.set(`${base}\u0000${index}`, control);
+  }
+  const skip = new Set();
+  const pairs = new Map();
+  for (const record of records) {
+    if (!record.pairKey || (record.name !== "duration_value" && record.name !== "duration_unit")) continue;
+    if (!pairs.has(record.pairKey)) pairs.set(record.pairKey, {});
+    pairs.get(record.pairKey)[record.name] = record;
+  }
+  for (const group of pairs.values()) {
+    if (!group.duration_value || !group.duration_unit) {
+      if (group.duration_value) skip.add(group.duration_value);
+      if (group.duration_unit) skip.add(group.duration_unit);
+      continue;
+    }
+    const valueControl = byId.get(group.duration_value.id);
+    const unitControl = byId.get(group.duration_unit.id);
+    skip.add(group.duration_value);
+    skip.add(group.duration_unit);
+    if (!valueControl || !unitControl) continue;
+    const shown = durationSeconds(valueControl.value, unitControl.value);
+    const edited = durationSeconds(group.duration_value.value, group.duration_unit.value);
+    // The rebuilt card already shows this length, possibly as 150 sec instead
+    // of 2.5 min. Leave that canonical display in place.
+    if (shown === edited) continue;
+    valueControl.value = group.duration_value.value;
+    unitControl.value = group.duration_unit.value;
+    valueControl.dataset.userEdited = "true";
+    unitControl.dataset.userEdited = "true";
+  }
+  for (const record of records) {
+    if (skip.has(record)) continue;
+    const control = byId.get(record.id);
+    if (!control) continue;
+    if (record.checkable) {
+      if (control.checked === record.checked) continue;
+      control.checked = record.checked;
+    } else if (control.value === record.value) {
+      continue;
+    } else {
+      control.value = record.value;
+    }
+    control.dataset.userEdited = "true";
+  }
+}
+
+// Goals, coach notes, and the other explicit-save forms are not date-dependent.
+// Rebuilding them from state.data would drop text the user has not submitted.
+// Today and Week have to be rebuilt so the date, fallback, and today marker
+// stay current. Only fields the user actually edited are copied back; an
+// untouched duplicate of the same activity must pick up the saved value.
+function renderForNewLocalDate() {
+  const preserved = [
+    { root: elements.todaySwitchForm, records: snapshotPreservedControls(elements.todaySwitchForm) },
+    { root: elements.todayList, records: snapshotPreservedControls(elements.todayList, { onlyUserEdited: true }) },
+    { root: elements.weekGrid, records: snapshotPreservedControls(elements.weekGrid, { onlyUserEdited: true }) }
+  ];
+  activeAutosaveFlushers.clear();
+  updateOverview();
+  renderToday();
+  renderWeek();
+  for (const entry of preserved) restorePreservedControls(entry.root, entry.records);
+  renderRunTracking();
+  renderCoachMemories();
+}
+
+async function rerenderIfDateChanged() {
+  if (!lastRenderedTodayDateKey || !shouldRerenderForNewDate(lastRenderedTodayDateKey)) return;
+  // Workout feedback and exercise logs already autosave. Flush those timers
+  // before their cards are rebuilt. Do not write Goals or Coach Notes here.
+  dateRefreshInProgress = true;
+  try {
+    await flushActiveAutosaves();
+    renderForNewLocalDate();
+  } finally {
+    dateRefreshInProgress = false;
+  }
+}
+
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") requestWakeLock();
+  if (document.visibilityState === "visible") {
+    requestWakeLock();
+    void rerenderIfDateChanged();
+  }
 });
 window.addEventListener("pointerdown", () => {
   if (!screenWakeLock || screenWakeLock.released) requestWakeLock();

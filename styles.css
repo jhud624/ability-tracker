@@ -2113,3 +2113,11 @@ input, select, textarea { min-width: 0; max-width: 100%; }
 .feedback-grid textarea { min-height: 70px; }
 .feedback-grid select, .feedback-grid input { width: 100%; min-width: 0; }
 .is-collapsed .coaching-details { display: none; }
+
+.today-fallback-notice {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
