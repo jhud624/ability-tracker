@@ -291,3 +291,115 @@ test("date refresh keeps a saved edit instead of restoring the untouched duplica
     else process.env.TZ = previousTZ;
   }
 });
+
+function plankState() {
+  const state = pageFixture();
+  state.active_plan.activities = [{
+    activity_id: "core",
+    date: "2026-11-11",
+    title: "Core",
+    type: "strength",
+    required_or_optional: "required",
+    completion: { completed: false },
+    subtasks: [{ subtask_id: "plank", title: "Plank", log_mode: "timed" }]
+  }];
+  return state;
+}
+
+function installClock(context, startMs) {
+  runInPage(context, `
+    const RealDate = Date;
+    let nowMs = ${startMs};
+    class ClockDate extends RealDate {
+      constructor(...args) {
+        super(...(args.length ? args : [nowMs]));
+      }
+      static now() { return nowMs; }
+    }
+    globalThis.Date = ClockDate;
+    globalThis.__setNow = (ms) => { nowMs = ms; };
+  `, "clock.js");
+}
+
+function loadPageScripts(context) {
+  for (const file of ["activity-summary.js", "today-list.js", "app.js"]) {
+    runInPage(context, fs.readFileSync(path.join(root, file), "utf8"), file);
+  }
+}
+
+test("date refresh does not turn a saved 1.5 min duration into 1.5 sec", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = plankState();
+  const calls = [];
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, {
+    url: "http://127.0.0.1:4173/",
+    pretendToBeVisual: true,
+    runScripts: "outside-only"
+  });
+  const { window } = dom;
+  const context = dom.getInternalVMContext();
+
+  try {
+    installClock(context, Date.parse("2026-11-11T15:00:00Z"));
+    window.fetch = async (input, options = {}) => {
+      const url = String(input?.url || input);
+      const method = String(options.method || "GET").toUpperCase();
+      const body = options.body ? String(options.body) : "";
+      calls.push({ url, method, body });
+      const respond = (status, payload) => ({
+        status,
+        ok: status >= 200 && status < 300,
+        json: async () => payload
+      });
+      if (url.includes("/api/session")) return respond(200, { authenticated: true });
+      if (url.includes("/api/state")) return respond(200, state);
+      if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+      if (method === "POST" && url.includes("/exercise-log")) {
+        const payload = JSON.parse(body);
+        const activity = state.active_plan.activities.find((item) => item.activity_id === "core");
+        activity.exercise_logs = { ...(activity.exercise_logs || {}), [payload.exercise_id]: payload };
+        return respond(200, state);
+      }
+      return respond(500, { error: "synthetic test does not save this write" });
+    };
+    loadPageScripts(context);
+
+    const { document } = window;
+    await waitFor(() => document.querySelector("#today-list input[name='duration_value']"));
+    const duration = document.querySelector("#today-list input[name='duration_value']");
+    const unit = document.querySelector("#today-list select[name='duration_unit']");
+    assert.equal(unit.value, "min");
+    duration.value = "1.5";
+    duration.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "1.5", inputType: "insertText" }));
+    typeInto(window, document.querySelector("#goal-primary"), typedGoal);
+
+    window.__setNow(Date.parse("2026-11-12T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await waitFor(() => document.querySelector("#today-list input[name='duration_value']").value === "90");
+
+    for (const rootId of ["#today-list", "#week-grid"]) {
+      assert.equal(document.querySelector(`${rootId} input[name='duration_value']`).value, "90");
+      assert.equal(document.querySelector(`${rootId} select[name='duration_unit']`).value, "sec");
+    }
+    assert.equal(document.querySelector("#goal-primary").value, typedGoal);
+
+    window.__setNow(Date.parse("2026-11-13T15:00:00Z"));
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const loggedSeconds = calls
+      .filter((call) => call.method === "POST" && call.url.includes("/exercise-log"))
+      .map((call) => JSON.parse(call.body).duration_seconds);
+    assert.deepEqual(loggedSeconds, ["90"]);
+    assert.equal(document.querySelector("#today-list input[name='duration_value']").value, "90");
+    assert.equal(document.querySelector("#today-list select[name='duration_unit']").value, "sec");
+    assert.equal(document.querySelector("#goal-primary").value, typedGoal);
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});

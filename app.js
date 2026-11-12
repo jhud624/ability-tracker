@@ -77,6 +77,7 @@ const elements = {
 let unlockResolver = null;
 const EXERCISE_DRAFT_PREFIX = "coach_loop_exercise_log_draft:";
 const activeAutosaveFlushers = new Set();
+let dateRefreshInProgress = false;
 // Per-card expand/collapse override in the Week view. Unset = default
 // (today's workout expanded, everything else collapsed).
 const weekCardExpanded = new Map();
@@ -843,7 +844,9 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       lastSaved = signature;
       clearExerciseDraft(activity.activity_id, payload.exercise_id);
       setAutosaveStatus(controls.status, "Saved", "is-saved");
-      if (exerciseLogHasData(payload)) queueAutoComplete();
+      // Checking the box re-renders the whole dashboard. A midnight refresh
+      // must not do that, or it would replace unsaved Goals and Coach Notes.
+      if (exerciseLogHasData(payload) && !dateRefreshInProgress) queueAutoComplete();
     } catch (error) {
       setAutosaveStatus(controls.status, "Not saved", "is-error");
     }
@@ -2690,24 +2693,60 @@ function preservedControlIdentity(control) {
   ].join("\u0000");
 }
 
+function durationPairControls(control) {
+  const row = control.closest(".subtask-row");
+  if (!row) return null;
+  const value = row.querySelector('input[name="duration_value"]');
+  const unit = row.querySelector('select[name="duration_unit"]');
+  if (!value || !unit || (control !== value && control !== unit)) return null;
+  return { value, unit };
+}
+
+function durationPairKey(control) {
+  const card = control.closest("[data-activity-id]");
+  const subtaskId = control.closest(".subtask-row")?.querySelector("[data-subtask-id]")?.dataset.subtaskId || "";
+  return `${card?.dataset.activityId || ""}\u0000${subtaskId}`;
+}
+
+function durationSeconds(value, unit) {
+  if (value === "" || value == null) return "";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  return String(Math.round(number * (unit === "min" ? 60 : 1)));
+}
+
 function snapshotPreservedControls(root, { onlyUserEdited = false } = {}) {
+  if (!root) return [];
+  const controls = [...root.querySelectorAll("input, textarea, select")].filter(isPreservedFormControl);
+  const included = new Set();
+  for (const control of controls) {
+    const pair = durationPairControls(control);
+    const pairEdited = pair && (pair.value.dataset.userEdited === "true" || pair.unit.dataset.userEdited === "true");
+    if (onlyUserEdited && control.dataset.userEdited !== "true" && !pairEdited) continue;
+    included.add(control);
+    // A duration is the number and the unit. Restoring only the number turns
+    // a saved 1.5 min (90 sec) back into 1.5 sec.
+    if (pairEdited) {
+      included.add(pair.value);
+      included.add(pair.unit);
+    }
+  }
   const records = [];
-  if (!root) return records;
   const seen = new Map();
-  for (const control of root.querySelectorAll("input, textarea, select")) {
-    if (!isPreservedFormControl(control)) continue;
-    // Today and Week render two copies of one activity. Copying every value
-    // back would put a stale, untouched copy on top of a save from the other card.
-    if (onlyUserEdited && control.dataset.userEdited !== "true") continue;
+  for (const control of controls) {
+    if (!included.has(control)) continue;
     const base = preservedControlIdentity(control);
     const index = seen.get(base) || 0;
     seen.set(base, index + 1);
     const checkable = control.type === "checkbox" || control.type === "radio";
+    const pair = durationPairControls(control);
     records.push({
       id: `${base}\u0000${index}`,
       value: control.value,
       checked: checkable ? control.checked : false,
-      checkable
+      checkable,
+      name: control.getAttribute("name") || "",
+      pairKey: pair ? durationPairKey(control) : ""
     });
   }
   return records;
@@ -2724,7 +2763,36 @@ function restorePreservedControls(root, records) {
     seen.set(base, index + 1);
     byId.set(`${base}\u0000${index}`, control);
   }
+  const skip = new Set();
+  const pairs = new Map();
   for (const record of records) {
+    if (!record.pairKey || (record.name !== "duration_value" && record.name !== "duration_unit")) continue;
+    if (!pairs.has(record.pairKey)) pairs.set(record.pairKey, {});
+    pairs.get(record.pairKey)[record.name] = record;
+  }
+  for (const group of pairs.values()) {
+    if (!group.duration_value || !group.duration_unit) {
+      if (group.duration_value) skip.add(group.duration_value);
+      if (group.duration_unit) skip.add(group.duration_unit);
+      continue;
+    }
+    const valueControl = byId.get(group.duration_value.id);
+    const unitControl = byId.get(group.duration_unit.id);
+    skip.add(group.duration_value);
+    skip.add(group.duration_unit);
+    if (!valueControl || !unitControl) continue;
+    const shown = durationSeconds(valueControl.value, unitControl.value);
+    const edited = durationSeconds(group.duration_value.value, group.duration_unit.value);
+    // The rebuilt card already shows this length, possibly as 90 sec instead
+    // of 1.5 min. Leave that canonical display in place.
+    if (shown === edited) continue;
+    valueControl.value = group.duration_value.value;
+    unitControl.value = group.duration_unit.value;
+    valueControl.dataset.userEdited = "true";
+    unitControl.dataset.userEdited = "true";
+  }
+  for (const record of records) {
+    if (skip.has(record)) continue;
     const control = byId.get(record.id);
     if (!control) continue;
     if (record.checkable) {
@@ -2763,8 +2831,13 @@ async function rerenderIfDateChanged() {
   if (!lastRenderedTodayDateKey || !shouldRerenderForNewDate(lastRenderedTodayDateKey)) return;
   // Workout feedback and exercise logs already autosave. Flush those timers
   // before their cards are rebuilt. Do not write Goals or Coach Notes here.
-  await flushActiveAutosaves();
-  renderForNewLocalDate();
+  dateRefreshInProgress = true;
+  try {
+    await flushActiveAutosaves();
+    renderForNewLocalDate();
+  } finally {
+    dateRefreshInProgress = false;
+  }
 }
 
 document.addEventListener("visibilitychange", () => {
