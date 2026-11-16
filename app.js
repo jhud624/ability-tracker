@@ -71,6 +71,9 @@ const elements = {
   unlockPassword: document.querySelector("#unlock-password"),
   unlockError: document.querySelector("#unlock-error"),
   unlockCancel: document.querySelector("#unlock-cancel"),
+  movementSheet: document.querySelector("#movement-sheet"),
+  movementSheetBody: document.querySelector("#movement-sheet-body"),
+  movementSheetClose: document.querySelector("#movement-sheet-close"),
   message: document.querySelector("#message")
 };
 
@@ -384,20 +387,11 @@ function glossaryMovementReference(title) {
 
 function movementReference(title) {
   return glossaryMovementReference(title) || movementCatalog.find((item) => item.match.test(title)) || {
-    title,
+    title: baseExerciseTitle(title) || title,
     description: "Use controlled reps, a setup that respects your back, and a load or pace that matches the day’s intent.",
     videoId: "",
     alternatives: [title]
   };
-}
-
-function baseExerciseTitle(title) {
-  return String(title || "")
-    .split(/\s+[—-]\s+/)[0]
-    .replace(/\b\d+\s*[xX]\s*\d+.*$/g, "")
-    .replace(/\b\d+\s*(min|minute|minutes|sec|second|seconds)\b.*$/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function normalizedExerciseKey(title) {
@@ -411,36 +405,70 @@ function subtaskIsNote(subtask) {
   return kind === "note" || /^timer\s*:/i.test(title) || /^note\s*:/i.test(title);
 }
 
-function subtaskIsCheckOnly(title) {
-  // Admin-style items ("Log difficulty...", "Record soreness") get a checkbox
-  // but no weight/time logging fields.
-  return /^\s*(log|note|record|journal|rate|review)\b/i.test(String(title || ""));
-}
-
-function exerciseSupportsDuration(title) {
-  return /\b(timer|hold|stretch|plank|walk|warmup|warm-up|cooldown|cool-down|reset|circuit|breathing|mobility|sec|second|seconds|min|minute|minutes)\b/i.test(title);
-}
-
-function parseSetRepPrescription(title) {
-  const match = String(title || "").match(/(\d+)\s*[x×]\s*(\d+(?:\s*[-–]\s*\d+)?)\s*(sec|second|seconds|min|minute|minutes)?/i);
-  if (!match) return null;
-  return {
-    sets: match[1],
-    reps: match[2].replace(/\s+/g, ""),
-    unit: match[3] ? match[3].toLowerCase() : null
-  };
-}
-
-const EXPLICIT_LOG_MODES = new Set(["strength", "timed", "loaded-timed"]);
-
 function exerciseLogMode(title, explicitMode) {
-  if (EXPLICIT_LOG_MODES.has(explicitMode)) return explicitMode;
-  // An explicit sets-x-reps prescription ("3x10") beats duration keywords,
-  // so "Warmup: squat — 3x10" logs as strength, not time.
-  const prescription = parseSetRepPrescription(title);
-  if (prescription && !prescription.unit) return "strength";
-  if (!exerciseSupportsDuration(title)) return "strength";
-  return /\b(sled|carry|carries|farmer|weighted|vest|drag)\b/i.test(title) ? "loaded-timed" : "timed";
+  return resolveExerciseLogMode(title, explicitMode);
+}
+
+function exerciseHistory() {
+  const logs = state.data?.exercise_logs || {};
+  const feedbackById = state.data?.feedback || {};
+  const listed = Array.isArray(state.data?.plans)
+    ? state.data.plans.filter((plan) => Array.isArray(plan?.activities) && plan.activities.length)
+    : [];
+  const plans = listed.length ? listed : (activePlan() ? [activePlan()] : []);
+  const seen = new Set();
+  const rows = [];
+  for (const plan of plans) {
+    for (const activity of plan.activities || []) {
+      if (!activity?.activity_id || seen.has(activity.activity_id)) continue;
+      seen.add(activity.activity_id);
+      rows.push({
+        activity_id: activity.activity_id,
+        date: activity.date,
+        subtasks: activity.subtasks || [],
+        exercise_logs: activity.exercise_logs || logs[activity.activity_id] || {},
+        feedback: activity.feedback || feedbackById[activity.activity_id] || null
+      });
+    }
+  }
+  return rows;
+}
+
+function guidanceForExercise(activity, exercise, savedLog, draft) {
+  const savedNumbers = prefillFromLog(savedLog);
+  return exerciseGuidance({
+    history: exerciseHistory(),
+    activity,
+    title: exercise.title,
+    explicitMode: exercise.logMode,
+    progression: exercise.progression,
+    glossary: state.data?.exercise_glossary || [],
+    suppressPrefill: Boolean(draft) || Boolean(savedNumbers)
+  });
+}
+
+function restoreScrollPosition(x, y) {
+  if ((window.scrollX || 0) === x && (window.scrollY || 0) === y) return;
+  if (typeof window.scrollTo !== "function") return;
+  try {
+    window.scrollTo(x, y);
+  } catch {
+    // Some test environments do not implement scrolling.
+  }
+}
+
+function preserveViewportDuring(fn) {
+  const x = window.scrollX || 0;
+  const y = window.scrollY || 0;
+  fn();
+  const restore = () => {
+    const delta = Math.abs((window.scrollY || 0) - y) + Math.abs((window.scrollX || 0) - x);
+    // Ignore a real jump such as the keyboard opening. Pull back the small
+    // nudges that layout and scroll anchoring cause while a value changes.
+    if (delta > 0 && delta < 80) restoreScrollPosition(x, y);
+  };
+  restore();
+  window.requestAnimationFrame(restore);
 }
 
 function formatDuration(seconds) {
@@ -660,8 +688,10 @@ function feedbackSignature(payload) {
 }
 
 function setAutosaveStatus(status, text, className = "") {
-  status.textContent = text;
-  status.className = `autosave-status${className ? ` ${className}` : ""}`;
+  preserveViewportDuring(() => {
+    status.textContent = text;
+    status.className = `autosave-status${className ? ` ${className}` : ""}`;
+  });
 }
 
 function createExerciseNumberField(exercise, name, labelText, options = {}) {
@@ -671,11 +701,13 @@ function createExerciseNumberField(exercise, name, labelText, options = {}) {
 
   const input = document.createElement("input");
   input.name = name;
-  input.type = "number";
-  input.min = "0";
-  input.step = options.step || "1";
+  // type=text avoids the iOS Safari bug where type=number scrolls the page as the value changes.
+  input.type = "text";
   input.inputMode = options.inputMode || "numeric";
+  input.enterKeyHint = "done";
+  input.autocapitalize = "off";
   input.autocomplete = "off";
+  input.spellcheck = false;
   if (options.placeholder) input.placeholder = options.placeholder;
   input.setAttribute("aria-label", options.ariaLabel);
   input.value = options.value ?? "";
@@ -684,8 +716,17 @@ function createExerciseNumberField(exercise, name, labelText, options = {}) {
   return { label, input };
 }
 
-function createExerciseLogControls(activity, exercise, log = {}) {
-  const selectedTitle = log.title || exercise.title;
+function suggestedFieldValue(saved, suggested) {
+  if (saved !== undefined && saved !== null && saved !== "") return { value: saved, suggested: false };
+  if (suggested !== undefined && suggested !== null && suggested !== "") return { value: suggested, suggested: true };
+  return { value: "", suggested: false };
+}
+
+function createExerciseLogControls(activity, exercise, log = {}, guidance = {}) {
+  const prefill = guidance.prefill || null;
+  const prescribedTitle = log.title || exercise.title;
+  const shortTitle = baseExerciseTitle(prescribedTitle);
+  const selectedTitle = !log.title && shortTitle ? shortTitle : prescribedTitle;
   const swapLabel = document.createElement("label");
   swapLabel.className = "exercise-swap-label";
   swapLabel.textContent = "exercise";
@@ -709,25 +750,30 @@ function createExerciseLogControls(activity, exercise, log = {}) {
 
   const mode = exerciseLogMode(selectedTitle, exercise.logMode);
   const prescription = parseSetRepPrescription(selectedTitle);
+  const weightValue = suggestedFieldValue(log.weight_lbs, prefill?.weight_lbs);
+  const setsValue = suggestedFieldValue(log.sets, prefill?.sets);
+  const repsValue = suggestedFieldValue(log.reps, prefill?.reps);
   const weight = createExerciseNumberField(exercise, "weight_lbs", "total lb", {
     title: "Total weight used per rep, including both sides or both dumbbells.",
-    step: "0.5",
     inputMode: "decimal",
     placeholder: "lb",
     ariaLabel: `Total weight used in pounds for ${selectedTitle}`,
-    value: log.weight_lbs
+    value: weightValue.value
   });
   const sets = createExerciseNumberField(exercise, "sets", mode === "strength" ? "sets" : "rounds", {
     ariaLabel: `Sets for ${selectedTitle}`,
-    value: log.sets
+    value: setsValue.value
   });
   const reps = createExerciseNumberField(exercise, "reps", "reps", {
     ariaLabel: `Reps per set for ${selectedTitle}`,
-    value: log.reps
+    value: repsValue.value
   });
   weight.label.classList.add("field-weight");
   sets.label.classList.add("field-sets");
   reps.label.classList.add("field-reps");
+  if (weightValue.suggested) weight.input.classList.add("is-prefill");
+  if (setsValue.suggested) sets.input.classList.add("is-prefill");
+  if (repsValue.suggested) reps.input.classList.add("is-prefill");
   if (prescription) {
     sets.input.placeholder = prescription.sets;
     if (!prescription.unit) reps.input.placeholder = prescription.reps;
@@ -740,11 +786,12 @@ function createExerciseLogControls(activity, exercise, log = {}) {
   timeWrap.className = "duration-inputs";
   const timeInput = document.createElement("input");
   timeInput.name = "duration_value";
-  timeInput.type = "number";
-  timeInput.min = "0";
-  timeInput.step = "0.5";
+  timeInput.type = "text";
   timeInput.inputMode = "decimal";
+  timeInput.enterKeyHint = "done";
+  timeInput.autocapitalize = "off";
   timeInput.autocomplete = "off";
+  timeInput.spellcheck = false;
   timeInput.setAttribute("aria-label", `Time for ${selectedTitle}`);
   const timeUnit = document.createElement("select");
   timeUnit.name = "duration_unit";
@@ -772,13 +819,24 @@ function createExerciseLogControls(activity, exercise, log = {}) {
   timeWrap.append(timeInput, timeUnit);
   timeLabel.append(timeWrap);
 
-  const total = document.createElement("output");
+  const suggestionState = {
+    pending: Boolean(weightValue.suggested || setsValue.suggested || repsValue.suggested)
+  };
+
+  const total = document.createElement("span");
   total.className = "exercise-total";
   total.title = "Total weight moved: total weight x sets x reps.";
+  if (suggestionState.pending) total.classList.add("is-prefill");
 
   const last = document.createElement("span");
   last.className = "exercise-last";
-  last.textContent = lastExerciseLogText(lastExerciseLogFor(activity, { ...exercise, title: selectedTitle }));
+
+  const useButton = document.createElement("button");
+  useButton.type = "button";
+  useButton.className = "suggestion-use";
+  useButton.textContent = "Use";
+  useButton.setAttribute("aria-label", "Log the suggested weight, sets, and reps");
+  useButton.hidden = !suggestionState.pending;
 
   const status = document.createElement("span");
   setAutosaveStatus(status, "Autosaves");
@@ -800,24 +858,48 @@ function createExerciseLogControls(activity, exercise, log = {}) {
     const current = payload();
     const value = exerciseLogTotal(current);
     const time = formatDuration(current.duration_seconds);
-    total.value = value ? `${value.toLocaleString()} lb` : time || "0 lb";
-    total.textContent = total.value;
+    total.textContent = value ? `${value.toLocaleString()} lb` : time || "";
+    total.classList.toggle("is-prefill", suggestionState.pending && Boolean(value || time));
+    if (suggestionState.pending) {
+      last.textContent = "Last time · not logged yet";
+      return;
+    }
     last.textContent = lastExerciseLogText(lastExerciseLogFor(activity, { ...exercise, title: current.title }));
   }
 
+  function markSuggestionAccepted() {
+    if (!suggestionState.pending) return;
+    suggestionState.pending = false;
+    [weight.input, sets.input, reps.input].forEach((input) => input.classList.remove("is-prefill"));
+    useButton.hidden = true;
+    updateTotal();
+  }
+
+  const fields = document.createElement("div");
+  fields.className = "exercise-fields";
   const fieldsByMode = {
     strength: [weight.label, sets.label, reps.label],
     timed: [timeLabel, sets.label],
     "loaded-timed": [timeLabel, weight.label, sets.label]
   };
+  fields.append(swapLabel, ...(fieldsByMode[mode] || []));
+
+  const meta = document.createElement("div");
+  meta.className = "exercise-log-meta";
+  meta.append(total, last, useButton, status);
 
   return {
-    elements: [swapLabel, ...fieldsByMode[mode], total, last, status],
+    elements: [fields, meta],
     inputs: [swap, weight.input, sets.input, reps.input, timeInput, timeUnit],
     swap,
     payload,
+    readPayload: payload,
     status,
-    updateTotal
+    updateTotal,
+    suggestionState,
+    useButton,
+    markSuggestionAccepted,
+    cue: guidance.cue || null
   };
 }
 
@@ -831,6 +913,15 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   const draftOwner = nextExerciseDraftOwner();
   const draft = readExerciseDraft(activity.activity_id, exercise.exercise_id);
   const hasSavedLog = Object.keys(savedLog || {}).length > 0;
+  const suggestionState = controls.suggestionState || { pending: false };
+  const readVisiblePayload = controls.readPayload || controls.payload;
+  // Suggested numbers stay on screen but are not part of the saved payload
+  // until the athlete edits a field or taps Use.
+  controls.payload = () => {
+    const visible = readVisiblePayload();
+    if (!suggestionState.pending) return visible;
+    return { ...visible, weight_lbs: "", sets: "", reps: "" };
+  };
   // A newly rendered empty row has a title even when the user has not entered
   // anything. Use that pristine payload as the baseline so visibility/pagehide
   // flushing does not manufacture a blank exercise log. Preserve draft recovery
@@ -944,8 +1035,8 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
 
   function saveDraftAndUpdate() {
     noteEditBaseline();
-    writeExerciseDraft(activity.activity_id, controls.payload(), draftOwner);
-    controls.updateTotal();
+    if (!suggestionState.pending) writeExerciseDraft(activity.activity_id, controls.payload(), draftOwner);
+    preserveViewportDuring(() => controls.updateTotal());
   }
 
   function scheduleAutosave(delay = 650) {
@@ -961,11 +1052,16 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   activeAutosaveFlushers.add(flushNow);
   controls.inputs.forEach((input) => {
     input.addEventListener("input", () => {
-      input.dataset.userEdited = "true";
-      saveDraftAndUpdate();
-      scheduleAutosave();
+      preserveViewportDuring(() => {
+        input.dataset.userEdited = "true";
+        if (suggestionState.pending) controls.markSuggestionAccepted?.();
+        saveDraftAndUpdate();
+        scheduleAutosave();
+      });
     });
     input.addEventListener("change", () => {
+      // A suggestion is not an edit. Accepting it happens on input or Use.
+      if (suggestionState.pending) return;
       input.dataset.userEdited = "true";
       // Typing already snapshotted this value. Change fires again when the
       // field commits, sometimes after another card has saved. Retaking the
@@ -976,15 +1072,35 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
     input.addEventListener("blur", () => scheduleAutosave(0));
   });
 
+  controls.useButton?.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!suggestionState.pending) return;
+    controls.markSuggestionAccepted?.();
+    controls.inputs.forEach((input) => {
+      if (String(input.value) !== "") input.dataset.userEdited = "true";
+    });
+    saveDraftAndUpdate();
+    await flushNow();
+  });
+
   controls.swap.addEventListener("change", () => {
     // Swapping to an alternative movement can change which fields apply
     // (e.g. curl -> weighted carry), so rebuild this row's controls from the
     // draft before flushing — the flush clears the draft on success.
+    // Suggested numbers are not part of that draft.
+    if (suggestionState.pending) {
+      controls.inputs.forEach((input) => {
+        if (input.name === "weight_lbs" || input.name === "sets" || input.name === "reps") input.value = "";
+      });
+      controls.markSuggestionAccepted?.();
+    }
     saveDraftAndUpdate();
     window.setTimeout(async () => {
       activeAutosaveFlushers.delete(flushNow);
       controls.elements.forEach((el) => el.remove());
       const rebuilt = appendExerciseLogControls(row, activity, exercise);
+      placeProgressionCue(row, rebuilt.cue);
       await flushNow();
       rebuilt.status.textContent = controls.status.textContent;
       rebuilt.status.className = controls.status.className;
@@ -1099,6 +1215,100 @@ async function flushActiveAutosaves() {
   await Promise.allSettled(flushers.map((flush) => flush()));
 }
 
+function createProgressionBadge(cue) {
+  const badge = document.createElement("span");
+  badge.className = `progression-cue is-${cue.direction}`;
+  badge.dataset.direction = cue.direction;
+  badge.title = cue.reason;
+  badge.setAttribute("aria-label", cue.reason);
+  badge.textContent = cue.direction === "up" ? "↑" : cue.direction === "down" ? "↓" : "→";
+  return badge;
+}
+
+function placeProgressionCue(row, cue) {
+  const tools = row.querySelector(".exercise-tools");
+  const host = tools || row.querySelector(".exercise-log-title");
+  if (!host) return;
+  host.querySelector(".progression-cue")?.remove();
+  if (!cue) return;
+  const badge = createProgressionBadge(cue);
+  if (tools) tools.prepend(badge);
+  else host.append(badge);
+}
+
+function fillMovementSheet(title) {
+  const reference = movementReference(title);
+  const body = elements.movementSheetBody;
+  body.replaceChildren();
+  const heading = document.createElement("h2");
+  heading.id = "movement-sheet-title";
+  heading.textContent = reference.title || title;
+  const description = document.createElement("p");
+  description.textContent = reference.description;
+  body.append(heading, description);
+  if (reference.instructions?.length) {
+    const how = document.createElement("p");
+    how.textContent = `How: ${reference.instructions.slice(0, 4).join(" → ")}`;
+    body.append(how);
+  }
+  if (reference.cues?.length) {
+    const cues = document.createElement("p");
+    cues.textContent = `Cues: ${reference.cues.slice(0, 3).join(" · ")}`;
+    body.append(cues);
+  }
+  if (reference.cautions?.length) {
+    const cautions = document.createElement("p");
+    cautions.textContent = `Watch for: ${reference.cautions.slice(0, 2).join(" · ")}`;
+    body.append(cautions);
+  }
+  const href = reference.sourceUrl || reference.videoUrl || (reference.videoId
+    ? `https://www.youtube.com/watch?v=${reference.videoId}`
+    : youtubeSearchUrl(reference.title || title));
+  const link = document.createElement("a");
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  link.textContent = reference.videoId || reference.videoUrl ? "Watch the movement" : "Search the movement";
+  body.append(link);
+}
+
+function showMovementSheet() {
+  const dialog = elements.movementSheet;
+  if (typeof dialog.showModal === "function") {
+    if (!dialog.open) dialog.showModal();
+    return;
+  }
+  dialog.setAttribute("open", "");
+}
+
+function closeMovementSheet() {
+  const dialog = elements.movementSheet;
+  if (typeof dialog.close === "function" && dialog.open) {
+    dialog.close();
+    return;
+  }
+  dialog.removeAttribute("open");
+  dialog.dispatchEvent(new Event("close"));
+}
+
+function openMovementSheet(title, opener) {
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  fillMovementSheet(title);
+  showMovementSheet();
+  const restore = () => {
+    restoreScrollPosition(scrollX, scrollY);
+    if (opener instanceof HTMLElement && opener.isConnected) {
+      try {
+        opener.focus({ preventScroll: true });
+      } catch {
+        opener.focus();
+      }
+    }
+  };
+  elements.movementSheet.addEventListener("close", restore, { once: true });
+}
+
 function openLibraryForExercise(title) {
   const key = normalizedExerciseKey(title);
   const tab = elements.tabButtons.find((button) => button.dataset.view === "library-view");
@@ -1122,7 +1332,7 @@ function createLibraryJumpButton(title) {
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    openLibraryForExercise(title);
+    openMovementSheet(title, button);
   });
   return button;
 }
@@ -1140,7 +1350,8 @@ function exerciseRows(activity) {
   }
   return [{
     exercise_id: "activity",
-    title: activity.title
+    title: activity.title,
+    logMode: sessionLogMode(activity.title)
   }];
 }
 
@@ -1165,12 +1376,16 @@ function renderExerciseLogs(activity, container) {
 
     const title = document.createElement("div");
     title.className = "exercise-log-title";
-    title.textContent = exercise.title;
-    title.append(createLibraryJumpButton(exercise.title));
+    const titleText = document.createElement("span");
+    titleText.textContent = exercise.title;
+    title.append(titleText, createLibraryJumpButton(exercise.title));
 
-    const controls = createExerciseLogControls(activity, exercise, log);
+    const guidance = guidanceForExercise(activity, exercise, savedLog, draft);
+    const controls = createExerciseLogControls(activity, exercise, log, guidance);
     attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);
-    row.append(title, ...controls.elements);
+    row.append(title);
+    placeProgressionCue(row, controls.cue);
+    row.append(...controls.elements);
     container.append(row);
     controls.updateTotal();
     if (draft) setAutosaveStatus(controls.status, "Draft", "is-saving");
@@ -1184,7 +1399,8 @@ function appendExerciseLogControls(row, activity, exercise) {
     ...savedLog,
     ...exerciseDraftFields(draft)
   };
-  const controls = createExerciseLogControls(activity, exercise, log);
+  const guidance = guidanceForExercise(activity, exercise, savedLog, draft);
+  const controls = createExerciseLogControls(activity, exercise, log, guidance);
   attachExerciseLogAutosave(row, activity, exercise, controls, savedLog);
   row.append(...controls.elements);
   controls.updateTotal();
@@ -1288,35 +1504,66 @@ function renderActivityActuals(activity) {
   return block.children.length ? block : null;
 }
 
+function roundStructureSummary(activity) {
+  const blocks = activity.blocks || [];
+  if (blocks.length === 1) {
+    const rest = activity.subtasks?.find((subtask) => subtask.subtask_id === blocks[0].active_rest_subtask_id);
+    const restName = rest ? baseExerciseTitle(rest.title) : "";
+    return `${blocks[0].rounds} rounds · alternate sets${restName ? ` · ${restName} between` : ""}`;
+  }
+  if (blocks.length > 1) return `${blocks.length} alternating blocks`;
+  return "Session notes";
+}
+
 function renderCoachingDetails(activity, node) {
   node.querySelector(".coaching-details")?.remove();
-  const panel = document.createElement("div");
-  panel.className = "coaching-details";
-  function line(text, warning = false) {
-    const p = document.createElement("p");
-    p.textContent = text;
-    if (warning) p.className = "coaching-warning";
-    panel.append(p);
+  node.querySelector(".round-structure")?.remove();
+  const anchor = node.querySelector(".activity-main");
+  const warnings = activity.preference_issues || [];
+  if (warnings.length) {
+    const panel = document.createElement("div");
+    panel.className = "coaching-details";
+    warnings.forEach((issue) => {
+      const line = document.createElement("p");
+      line.className = "coaching-warning";
+      line.textContent = `Preference needs review: ${issue}`;
+      panel.append(line);
+    });
+    anchor.after(panel);
   }
-  for (const block of activity.blocks || []) {
-    const primary = activity.subtasks.find(s => s.subtask_id === block.primary_subtask_id)?.title;
-    const rest = activity.subtasks.find(s => s.subtask_id === block.active_rest_subtask_id)?.title;
-    line(`${block.rounds} rounds · alternate individual sets`);
-    line(`${primary} → active rest: ${rest} → next work set`);
-    line(`${block.active_rest_between_rounds_only ? block.rounds - 1 : block.rounds} active-rest bouts${block.additional_rest_seconds ? ` · ${block.additional_rest_seconds}s additional rest` : " · extra rest as needed"}`);
-  }
-  (activity.preference_issues || []).forEach(issue => line(`Preference needs review: ${issue}`, true));
-  for (const r of activity.preference_applications || []) {
-    if (!activity.preference_issues?.length) line(r.exception_reason ? `Preference exception: ${r.exception_reason}` : "Uses your between-set active-rest preference");
-  }
+
+  const blocks = activity.blocks || [];
   const timing = activity.timing;
-  if (timing?.actual_minutes) {
-    line(`${timing.estimated_minutes ? `Estimated ${timing.estimated_minutes} / actual` : "Actual"} ${timing.actual_minutes} min${timing.error_minutes !== null ? ` · estimate ${Math.abs(timing.error_minutes)} min ${timing.error_minutes >= 0 ? "over" : "under"}` : ""}`);
-    line(timing.eligible ? "Confirmed session · used for comparable workout timing" : `Timing history only: ${timing.reason}`);
+  const suggestion = state.data?.coaching_brief?.duration_suggestions?.find((item) => item.activity_id === activity.activity_id);
+  const exceptions = (activity.preference_applications || []).filter((entry) => entry.exception_reason);
+  const hasNotes = blocks.length || exceptions.length || timing?.actual_minutes || suggestion?.sample_count >= 3;
+  if (!hasNotes) return;
+
+  const details = document.createElement("details");
+  details.className = "round-structure";
+  const summary = document.createElement("summary");
+  summary.textContent = roundStructureSummary(activity);
+  details.append(summary);
+  const addLine = (text) => {
+    const line = document.createElement("p");
+    line.textContent = text;
+    details.append(line);
+  };
+  for (const block of blocks) {
+    const primary = baseExerciseTitle(activity.subtasks?.find((subtask) => subtask.subtask_id === block.primary_subtask_id)?.title);
+    const rest = baseExerciseTitle(activity.subtasks?.find((subtask) => subtask.subtask_id === block.active_rest_subtask_id)?.title);
+    addLine(`${block.rounds} rounds · ${primary || "work"} alternating with ${rest || "active rest"}`);
+    const bouts = block.active_rest_between_rounds_only ? Math.max(block.rounds - 1, 0) : block.rounds;
+    addLine(`${bouts} between-set rests${block.additional_rest_seconds ? ` · ${block.additional_rest_seconds}s extra` : ""}`);
   }
-  const suggestion = state.data?.coaching_brief?.duration_suggestions?.find(s => s.activity_id === activity.activity_id);
-  if (suggestion?.sample_count >= 3) line(`Personal timing: about ${suggestion.estimated_minutes} min (${suggestion.range_minutes.join("–")} min across ${suggestion.sample_count} comparable sessions).`);
-  if (panel.childNodes.length) node.querySelector(".activity-main").after(panel);
+  exceptions.forEach((entry) => addLine(`Preference exception: ${entry.exception_reason}`));
+  if (timing?.actual_minutes) {
+    addLine(`${timing.estimated_minutes ? `Estimated ${timing.estimated_minutes} / actual` : "Actual"} ${timing.actual_minutes} min${timing.error_minutes !== null ? ` · estimate ${Math.abs(timing.error_minutes)} min ${timing.error_minutes >= 0 ? "over" : "under"}` : ""}`);
+  }
+  if (suggestion?.sample_count >= 3) {
+    addLine(`Personal timing: about ${suggestion.estimated_minutes} min (${suggestion.range_minutes.join("–")} min across ${suggestion.sample_count} comparable sessions).`);
+  }
+  (node.querySelector(".coaching-details") || anchor).after(details);
 }
 
 function renderActivity(activity, options = {}) {
@@ -1350,21 +1597,27 @@ function renderActivity(activity, options = {}) {
   } else {
     coachNotes.remove();
   }
-  equipmentTags.innerHTML = "";
-  (activity.equipment || []).forEach((item) => {
-    const tag = document.createElement("span");
-    tag.textContent = item;
-    equipmentTags.append(tag);
-  });
-  (activity.references || []).forEach((reference) => {
-    const tag = document.createElement("span");
-    tag.textContent = reference === "ref-atg-back-ability" ? "ATG Back Ability" : reference;
-    equipmentTags.append(tag);
-  });
+  if (options.hideEquipment) {
+    equipmentTags.remove();
+  } else {
+    equipmentTags.innerHTML = "";
+    (activity.equipment || []).forEach((item) => {
+      const tag = document.createElement("span");
+      tag.textContent = item;
+      equipmentTags.append(tag);
+    });
+    (activity.references || []).forEach((reference) => {
+      const tag = document.createElement("span");
+      tag.textContent = reference === "ref-atg-back-ability" ? "ATG Back Ability" : reference;
+      equipmentTags.append(tag);
+    });
+  }
 
   subtaskList.innerHTML = "";
   const usesExerciseVolume = activityUsesExerciseVolume(activity);
-  if (usesExerciseVolume && (activity.subtasks || []).length) {
+  const hasLoggableSubtask = usesExerciseVolume && (activity.subtasks || []).some((subtask) =>
+    !subtaskIsNote(subtask) && exerciseLogMode(subtask.title, subtask.log_mode) !== "check");
+  if (hasLoggableSubtask) {
     const hint = document.createElement("p");
     hint.className = "exercise-log-hint";
     hint.textContent = "Enter total weight used per rep, not weight per side.";
@@ -1378,9 +1631,8 @@ function renderActivity(activity, options = {}) {
       subtaskList.append(note);
       return;
     }
-    const loggable = usesExerciseVolume && (subtask.log_mode
-      ? subtask.log_mode !== "check"
-      : !subtaskIsCheckOnly(subtask.title));
+    const mode = exerciseLogMode(subtask.title, subtask.log_mode);
+    const loggable = usesExerciseVolume && mode !== "check";
     const row = loggable ? document.createElement("form") : document.createElement("label");
     row.className = loggable ? "subtask-row exercise-entry-row" : "subtask-row";
     const checkbox = document.createElement("input");
@@ -1393,12 +1645,17 @@ function renderActivity(activity, options = {}) {
     row.append(checkbox, span);
     if (loggable) {
       row.dataset.exerciseId = subtask.subtask_id;
-      row.append(createLibraryJumpButton(subtask.title));
-      appendExerciseLogControls(row, activity, {
+      const tools = document.createElement("div");
+      tools.className = "exercise-tools";
+      tools.append(createLibraryJumpButton(subtask.title));
+      row.append(tools);
+      const controls = appendExerciseLogControls(row, activity, {
         exercise_id: subtask.subtask_id,
         title: subtask.title,
-        logMode: subtask.log_mode
+        logMode: subtask.log_mode,
+        progression: subtask.progression
       });
+      placeProgressionCue(row, controls.cue);
     }
     subtaskList.append(row);
   });
@@ -1507,7 +1764,7 @@ function renderToday() {
     line.textContent = notice;
     elements.todayList.append(line);
   }
-  list.forEach((activity) => elements.todayList.append(renderActivity(activity, { loggedDate: key })));
+  list.forEach((activity) => elements.todayList.append(renderActivity(activity, { loggedDate: key, hideEquipment: true })));
 
   const allDone = list.every((activity) => activity.completion?.completed);
   elements.completeWorkout.hidden = false;
@@ -2606,6 +2863,11 @@ elements.unlockCancel.addEventListener("click", () => {
 
 elements.unlockModal.addEventListener("click", (event) => {
   if (event.target === elements.unlockModal) closeUnlockModal(false);
+});
+
+elements.movementSheetClose?.addEventListener("click", () => closeMovementSheet());
+elements.movementSheet?.addEventListener("click", (event) => {
+  if (event.target === elements.movementSheet) closeMovementSheet();
 });
 
 document.addEventListener("keydown", (event) => {

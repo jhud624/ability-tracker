@@ -156,6 +156,42 @@ test("validatePlan preserves valid subtask log_mode values and drops invalid one
   assert.equal(subtasks[4].log_mode, undefined);
 });
 
+test("validatePlan defaults warm-ups and unloaded mobility to check and keeps an explicit progression", () => {
+  const plan = validatePlan({
+    week_start_date: "2026-06-22",
+    goals: ["Lift twice"],
+    activities: [
+      {
+        date: "2026-06-22",
+        title: "Lift",
+        type: "lift",
+        subtasks: [
+          { title: "Warm-up: backward walking — 60 seconds" },
+          { title: "Warm-up: shoulder circles — 30 seconds" },
+          { title: "Cool-down: supine hamstring stretch — 30 seconds per side" },
+          { title: "Couch stretch — 45 sec each side" },
+          { title: "Warmup: bodyweight squat — 3x10", log_mode: "strength" },
+          { title: "Barbell back squat — 3 sets of 8 reps at a moderate load (RPE 6)", progression: "down" },
+          { title: "Farmer carry — 40 seconds" },
+          { title: "Plank hold", log_mode: "timed" },
+          { title: "Curl", progression: "sideways" }
+        ]
+      }
+    ]
+  });
+  const subtasks = plan.activities[0].subtasks;
+  assert.equal(subtasks[0].log_mode, "check");
+  assert.equal(subtasks[1].log_mode, "check");
+  assert.equal(subtasks[2].log_mode, "check");
+  assert.equal(subtasks[3].log_mode, "check");
+  assert.equal(subtasks[4].log_mode, "strength");
+  assert.equal(subtasks[5].log_mode, undefined);
+  assert.equal(subtasks[5].progression, "down");
+  assert.equal(subtasks[6].log_mode, undefined);
+  assert.equal(subtasks[7].log_mode, "timed");
+  assert.equal(subtasks[8].progression, undefined);
+});
+
 test("createDefaultState seeds inferred gear inventory", () => {
   const store = createDefaultState(new Date("2026-06-19T12:00:00"));
   const names = store.gear.map((item) => item.name);

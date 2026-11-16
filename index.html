@@ -369,6 +369,16 @@
         <p class="message" id="message" role="status" aria-live="polite"></p>
       </main>
 
+      <dialog class="movement-sheet" id="movement-sheet" aria-labelledby="movement-sheet-title">
+        <div class="movement-sheet-card">
+          <div class="movement-sheet-bar">
+            <p class="eyebrow">Movement</p>
+            <button class="ghost-button" id="movement-sheet-close" type="button">Close</button>
+          </div>
+          <div id="movement-sheet-body"></div>
+        </div>
+      </dialog>
+
       <div class="modal-backdrop" id="unlock-modal" hidden>
         <form class="unlock-modal" id="unlock-form" aria-labelledby="unlock-title">
           <div>
@@ -416,6 +426,7 @@
 
     <script src="activity-summary.js"></script>
     <script src="today-list.js"></script>
+    <script src="exercise-guidance.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

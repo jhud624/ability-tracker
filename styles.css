@@ -26,7 +26,8 @@
 
 * { box-sizing: border-box; }
 html {
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
+  overflow-anchor: none;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -2120,4 +2121,212 @@ input, select, textarea { min-width: 0; max-width: 100%; }
   font-size: 13px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* Round structure stays one line until the athlete asks for it. */
+.round-structure {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+.round-structure summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+.round-structure p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.is-collapsed .round-structure { display: none; }
+
+/* Logging rows keep a fixed grid so totals, status, and badges cannot reflow the inputs. */
+.exercise-entry-row,
+.day-column .exercise-entry-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "check title tools"
+    "fields fields fields"
+    "meta meta meta";
+  align-items: center;
+  gap: 8px 10px;
+  overflow-anchor: none;
+}
+.exercise-log-row,
+.day-column .exercise-log-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "title"
+    "fields"
+    "meta";
+  align-items: center;
+  gap: 8px;
+  overflow-anchor: none;
+}
+.exercise-entry-row > input[type="checkbox"] { grid-area: check; align-self: center; }
+.exercise-entry-row > .subtask-title { grid-area: title; }
+.exercise-entry-row > .exercise-tools,
+.exercise-log-title .exercise-tools { grid-area: tools; }
+.exercise-log-title { grid-area: title; display: flex; align-items: center; gap: 8px; }
+.exercise-log-title > span { min-width: 0; flex: 1 1 auto; }
+.exercise-fields,
+.exercise-log-meta { grid-column: 1 / -1; min-width: 0; }
+.exercise-entry-row > .exercise-fields { grid-area: fields; }
+.exercise-entry-row > .exercise-log-meta { grid-area: meta; }
+.exercise-log-row > .exercise-fields { grid-area: fields; }
+.exercise-log-row > .exercise-log-meta { grid-area: meta; }
+.exercise-tools {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.exercise-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
+  gap: 8px 10px;
+  align-items: end;
+}
+.exercise-entry-row .exercise-fields > .exercise-swap-label,
+.exercise-entry-row .exercise-fields > .duration-field,
+.exercise-log-row .exercise-fields > .exercise-swap-label,
+.exercise-log-row .exercise-fields > .duration-field {
+  grid-column: 1 / -1;
+  grid-row: auto;
+}
+.exercise-entry-row .exercise-fields > .field-weight,
+.exercise-log-row .exercise-fields > .field-weight { grid-column: 1; grid-row: auto; }
+.exercise-entry-row .exercise-fields > .field-sets,
+.exercise-log-row .exercise-fields > .field-sets { grid-column: 2; grid-row: auto; }
+.exercise-entry-row .exercise-fields > .field-reps,
+.exercise-log-row .exercise-fields > .field-reps { grid-column: 3; grid-row: auto; }
+.exercise-fields input,
+.exercise-fields select,
+.exercise-log-row input,
+.exercise-log-row select,
+.exercise-entry-row input:not([type="checkbox"]),
+.exercise-entry-row select,
+.feedback-grid input,
+.feedback-grid select,
+.feedback-grid textarea {
+  font-size: 16px;
+  line-height: 1.2;
+}
+.exercise-fields input,
+.exercise-fields select {
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+}
+.exercise-log-meta {
+  display: grid;
+  grid-template-columns: minmax(8rem, auto) minmax(0, 1fr) 5.5rem;
+  grid-template-areas:
+    "total use status"
+    "hint hint hint";
+  align-items: center;
+  gap: 6px 8px;
+  min-height: 28px;
+}
+.exercise-log-meta .exercise-total { grid-area: total; }
+.exercise-log-meta .suggestion-use { grid-area: use; justify-self: end; }
+.exercise-log-meta .autosave-status { grid-area: status; }
+.exercise-log-meta .exercise-last { grid-area: hint; width: auto; max-width: 100%; }
+.exercise-log-meta .exercise-total,
+.exercise-log-meta .exercise-last,
+.exercise-log-meta .autosave-status,
+.exercise-log-meta .suggestion-use {
+  min-height: 28px;
+  height: 28px;
+  max-height: 28px;
+}
+.exercise-log-meta .exercise-total {
+  width: 8rem;
+  min-width: 8rem;
+  justify-content: flex-start;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.exercise-log-meta .exercise-last {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.exercise-log-meta .exercise-last:empty,
+.exercise-log-meta .exercise-total:empty { display: none; }
+.exercise-log-meta .autosave-status {
+  width: 5.5rem;
+  min-width: 5.5rem;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.exercise-fields input.is-prefill,
+.exercise-total.is-prefill {
+  color: var(--muted);
+  font-style: italic;
+  border-style: dashed;
+  background: transparent;
+}
+.suggestion-use {
+  min-width: 52px;
+  padding: 0 8px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.suggestion-use[hidden] { display: none; }
+.progression-cue {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 28px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+}
+.progression-cue.is-up { color: var(--success); border-color: var(--success); }
+.progression-cue.is-down { color: var(--green); border-color: var(--green); }
+.progression-cue.is-hold { color: var(--muted); }
+
+.movement-sheet {
+  width: min(560px, calc(100% - 24px));
+  max-height: min(78vh, 720px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.movement-sheet::backdrop { background: rgba(0, 0, 0, 0.72); }
+.movement-sheet-card { display: grid; gap: 12px; padding: 16px; }
+.movement-sheet-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.movement-sheet h2 { margin: 0; font-size: 28px; line-height: 1.05; }
+.movement-sheet p { margin: 0; line-height: 1.45; }
+.movement-sheet a { color: var(--ink); font-weight: 800; }
+@media (max-width: 620px) {
+  .movement-sheet {
+    width: 100%;
+    max-height: 78vh;
+    margin: auto 0 0;
+    border-bottom: 0;
+  }
+}
+@media (max-width: 480px) {
+  .exercise-entry-row .exercise-fields > .field-weight,
+  .exercise-log-row .exercise-fields > .field-weight { grid-column: 1; }
+  .exercise-entry-row .exercise-fields > .field-sets,
+  .exercise-log-row .exercise-fields > .field-sets { grid-column: 2; }
+  .exercise-entry-row .exercise-fields > .field-reps,
+  .exercise-log-row .exercise-fields > .field-reps { grid-column: 3; }
 }

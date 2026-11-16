@@ -134,7 +134,7 @@ test("visibility date change keeps unsaved goals, notes, and other dashboard inp
       return respond(500, { error: "synthetic test does not save this write" });
     };
 
-    for (const file of ["activity-summary.js", "today-list.js", "app.js"]) {
+    for (const file of ["activity-summary.js", "today-list.js", "exercise-guidance.js", "app.js"]) {
       runInPage(context, fs.readFileSync(path.join(root, file), "utf8"), file);
     }
 
@@ -252,7 +252,7 @@ test("date refresh keeps a saved edit instead of restoring the untouched duplica
       return respond(500, { error: "synthetic test does not save this write" });
     };
 
-    for (const file of ["activity-summary.js", "today-list.js", "app.js"]) {
+    for (const file of ["activity-summary.js", "today-list.js", "exercise-guidance.js", "app.js"]) {
       runInPage(context, fs.readFileSync(path.join(root, file), "utf8"), file);
     }
 
@@ -322,7 +322,7 @@ function installClock(context, startMs) {
 }
 
 function loadPageScripts(context) {
-  for (const file of ["activity-summary.js", "today-list.js", "app.js"]) {
+  for (const file of ["activity-summary.js", "today-list.js", "exercise-guidance.js", "app.js"]) {
     runInPage(context, fs.readFileSync(path.join(root, file), "utf8"), file);
   }
 }

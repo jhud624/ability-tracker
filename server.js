@@ -1,5 +1,6 @@
 const { buildRunPlanFromState } = require("./run-plan");
 const learning = require("./coaching");
+const { resolveExerciseLogMode, normalizeProgression } = require("./exercise-guidance");
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -246,22 +247,34 @@ function normalizeSubtaskLogMode(value) {
   return SUBTASK_LOG_MODES.has(mode) ? mode : undefined;
 }
 
+function defaultedLogMode(title, explicit) {
+  if (explicit) return explicit;
+  return resolveExerciseLogMode(title) === "check" ? "check" : undefined;
+}
+
 function normalizeSubtasks(activityId, subtasks = []) {
   if (!Array.isArray(subtasks)) return [];
   return subtasks.map((subtask, index) => {
     if (typeof subtask === "string") {
-      return {
+      const normalized = {
         subtask_id: `${activityId}-task-${index + 1}`,
         title: subtask
       };
+      const logMode = defaultedLogMode(subtask);
+      if (logMode) normalized.log_mode = logMode;
+      return normalized;
     }
-    return {
+    const title = String(subtask.title || subtask.name || subtask.description || `Task ${index + 1}`);
+    const normalized = {
       subtask_id: String(subtask.subtask_id || subtask.id || `${activityId}-task-${index + 1}`),
-      title: String(subtask.title || subtask.name || subtask.description || `Task ${index + 1}`),
+      title,
       kind: subtask.kind || subtask.type ? String(subtask.kind || subtask.type) : undefined,
       notes: subtask.notes ? String(subtask.notes) : undefined,
-      log_mode: normalizeSubtaskLogMode(subtask.log_mode || subtask.tracking)
+      log_mode: defaultedLogMode(title, normalizeSubtaskLogMode(subtask.log_mode || subtask.tracking))
     };
+    const progression = normalizeProgression(subtask.progression);
+    if (progression) normalized.progression = progression;
+    return normalized;
   });
 }
 
