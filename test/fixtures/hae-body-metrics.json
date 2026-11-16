@@ -1,0 +1,75 @@
+{
+  "data": {
+    "workouts": [
+      {
+        "id": "body-metrics-workout-1",
+        "name": "Outdoor Run",
+        "startDate": "2026-07-01T09:00:00-04:00",
+        "duration": { "qty": 1200, "units": "sec" },
+        "distance": { "qty": 2, "units": "mi" }
+      }
+    ],
+    "metrics": [
+      {
+        "name": "step_count",
+        "units": "count",
+        "data": [
+          { "date": "2026-07-01 12:00:00 -0400", "qty": 8450, "source": "iPhone" }
+        ]
+      },
+      {
+        "name": "body_mass",
+        "units": "kg",
+        "data": [
+          { "date": "2026-07-02 07:30:00 -0400", "qty": 82.4, "source": "Hume" },
+          { "date": "2026-07-02 07:30:00 -0400", "qty": 82.4, "source": "Hume" }
+        ]
+      },
+      {
+        "name": "body_mass",
+        "units": "lb",
+        "data": [
+          { "date": "2026-07-02 07:30:00 -0400", "qty": 181, "source": "Apple Watch" },
+          { "date": "2026-07-03 08:05:00 -0400", "qty": 190.5 }
+        ]
+      },
+      {
+        "name": "body_mass",
+        "units": "lbs",
+        "data": [
+          { "date": "2026-07-06 08:10:00 -0400", "qty": 188, "source": "Withings" }
+        ]
+      },
+      {
+        "name": "body_mass",
+        "units": "st",
+        "data": [
+          { "date": "2026-07-05 08:00:00 -0400", "qty": 12.5, "source": "Hume" }
+        ]
+      },
+      {
+        "name": "body_mass",
+        "data": [
+          { "date": "2026-07-07 08:00:00 -0400", "qty": 200, "source": "Hume" }
+        ]
+      },
+      {
+        "name": "body_fat_percentage",
+        "units": "%",
+        "data": [
+          { "date": "2026-07-02 07:30:00 -0400", "qty": 18.5, "source": "Hume" },
+          { "date": "2026-07-03 08:05:00 -0400", "qty": 21.4, "source": "Renpho" },
+          { "date": "2026-07-04 08:00:00 -0400", "qty": 1, "source": "Hume" }
+        ]
+      },
+      {
+        "name": "body_mass_index",
+        "units": "count",
+        "data": [
+          { "date": "2026-07-02 07:30:00 -0400", "qty": 24.2, "source": "Hume" },
+          { "date": "2026-07-03 08:05:00 -0400", "qty": 23.76 }
+        ]
+      }
+    ]
+  }
+}
