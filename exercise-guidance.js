@@ -167,14 +167,20 @@ function previousStrengthSession({ history, activity, title, glossary } = {}) {
     for (const [exerciseId, log] of Object.entries(logs)) {
       if (!logHasStrengthData(log)) continue;
       const subtask = subtasks.find((entry) => entry.subtask_id === exerciseId);
-      const logTitle = subtask?.title || log?.title || "";
-      if (exerciseIdentityKey(logTitle, glossary) !== key) continue;
+      const loggedTitle = String(log?.title || "").trim();
+      const prescribedTitle = String(subtask?.title || "").trim();
+      // The selector stores the movement they actually performed on log.title.
+      // The subtask title stays the original prescription, so it is only a fallback.
+      const identityTitle = loggedTitle || prescribedTitle;
+      if (exerciseIdentityKey(identityTitle, glossary) !== key) continue;
+      const sameMovement = !loggedTitle || !prescribedTitle
+        || exerciseIdentityKey(loggedTitle, glossary) === exerciseIdentityKey(prescribedTitle, glossary);
       matches.push({
         activity_id: item.activity_id,
         date: item.date || "",
         updated_at: log.updated_at || "",
         log,
-        prescriptionTitle: subtask?.title || logTitle,
+        prescriptionTitle: sameMovement ? (prescribedTitle || loggedTitle) : loggedTitle,
         feedback: item.feedback || null
       });
     }

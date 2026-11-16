@@ -724,9 +724,11 @@ function suggestedFieldValue(saved, suggested) {
 
 function createExerciseLogControls(activity, exercise, log = {}, guidance = {}) {
   const prefill = guidance.prefill || null;
-  const prescribedTitle = log.title || exercise.title;
-  const shortTitle = baseExerciseTitle(prescribedTitle);
-  const selectedTitle = !log.title && shortTitle ? shortTitle : prescribedTitle;
+  // Mode and placeholders need the full prescription ("Wall sit — 3x30 sec").
+  // The selector can show the short movement name without changing that.
+  const prescriptionTitle = log.title || exercise.title;
+  const shortTitle = baseExerciseTitle(exercise.title);
+  const selectedTitle = !log.title && shortTitle ? shortTitle : prescriptionTitle;
   const swapLabel = document.createElement("label");
   swapLabel.className = "exercise-swap-label";
   swapLabel.textContent = "exercise";
@@ -748,8 +750,8 @@ function createExerciseLogControls(activity, exercise, log = {}, guidance = {}) 
   }
   swapLabel.append(swap);
 
-  const mode = exerciseLogMode(selectedTitle, exercise.logMode);
-  const prescription = parseSetRepPrescription(selectedTitle);
+  const mode = exerciseLogMode(prescriptionTitle, exercise.logMode);
+  const prescription = parseSetRepPrescription(prescriptionTitle);
   const weightValue = suggestedFieldValue(log.weight_lbs, prefill?.weight_lbs);
   const setsValue = suggestedFieldValue(log.sets, prefill?.sets);
   const repsValue = suggestedFieldValue(log.reps, prefill?.reps);
@@ -812,8 +814,8 @@ function createExerciseLogControls(activity, exercise, log = {}, guidance = {}) 
       timeUnit.value = "sec";
     }
   } else {
-    timeUnit.value = /\b(sec|second|seconds)\b/i.test(selectedTitle) ? "sec" : "min";
-    const suggested = selectedTitle.match(/(\d+(?:\.\d+)?)\s*(?:min|minute|sec|second)/i);
+    timeUnit.value = /\b(sec|second|seconds)\b/i.test(prescriptionTitle) ? "sec" : "min";
+    const suggested = prescriptionTitle.match(/(\d+(?:\.\d+)?)\s*(?:min|minute|sec|second)/i);
     if (suggested) timeInput.placeholder = suggested[1];
   }
   timeWrap.append(timeInput, timeUnit);
@@ -1052,6 +1054,9 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
   activeAutosaveFlushers.add(flushNow);
   controls.inputs.forEach((input) => {
     input.addEventListener("input", () => {
+      // The movement selector fires input before change. Accepting here would
+      // keep the old exercise's suggestion and save it under the new name.
+      if (input === controls.swap) return;
       preserveViewportDuring(() => {
         input.dataset.userEdited = "true";
         if (suggestionState.pending) controls.markSuggestionAccepted?.();
@@ -1060,6 +1065,7 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       });
     });
     input.addEventListener("change", () => {
+      if (input === controls.swap) return;
       // A suggestion is not an edit. Accepting it happens on input or Use.
       if (suggestionState.pending) return;
       input.dataset.userEdited = "true";
@@ -1069,7 +1075,10 @@ function attachExerciseLogAutosave(row, activity, exercise, controls, savedLog =
       if (exerciseLogSignature(controls.payload()) !== baselinePayloadSignature) noteEditBaseline();
       scheduleAutosave(0);
     });
-    input.addEventListener("blur", () => scheduleAutosave(0));
+    input.addEventListener("blur", () => {
+      if (input === controls.swap) return;
+      scheduleAutosave(0);
+    });
   });
 
   controls.useButton?.addEventListener("click", async (event) => {

@@ -99,6 +99,7 @@ test("prefill lookup matches glossary identity and the most recent earlier sessi
     glossary
   });
   assert.equal(previous.activity_id, "newer");
+  assert.equal(previous.prescriptionTitle, "Barbell back squat — 3 sets of 8 reps at a moderate load (RPE 6)");
   assert.deepEqual(prefillFromLog(previous.log), { weight_lbs: "135", sets: "3", reps: "8" });
   assert.equal(previousStrengthSession({
     history,
@@ -106,6 +107,27 @@ test("prefill lookup matches glossary identity and the most recent earlier sessi
     title: "Bird-dog — 2 between-set bouts",
     glossary
   }), null);
+
+  const swapped = session({
+    id: "swap",
+    date: "2026-11-10",
+    title: "Bench press — 3x8",
+    exerciseId: "press",
+    log: { title: "Push-up", sets: 3, reps: 12 }
+  });
+  const withSwap = [...history, swapped];
+  assert.equal(previousStrengthSession({
+    history: withSwap,
+    activity: today,
+    title: "Bench press — 3x8"
+  })?.activity_id, undefined);
+  const pushups = previousStrengthSession({
+    history: withSwap,
+    activity: today,
+    title: "Push-up"
+  });
+  assert.equal(pushups.activity_id, "swap");
+  assert.equal(pushups.prescriptionTitle, "Push-up");
 });
 
 test("the load arrow follows the last session, and a plan override wins", () => {
