@@ -2,14 +2,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 const looseObject = z.object({}).passthrough();
-const weeklySubtaskSchema = z.union([
+export const weeklySubtaskSchema = z.union([
   z.string().min(1),
   z.object({
     subtask_id: z.string().optional(),
     title: z.string().min(1),
     kind: z.string().optional(),
     notes: z.string().optional(),
-    log_mode: z.enum(["strength", "timed", "loaded-timed", "check"]).optional()
+    log_mode: z.enum(["strength", "timed", "loaded-timed", "check"]).optional(),
+    progression: z.unknown().optional().describe("Optional load arrow override: up, hold, or down. Null and any other value are ignored. Omit it and Coach Loop compares the last logged session with the rep range, RPE, difficulty, and back pain.")
   }).passthrough()
 ]);
 // Only the fields the server cannot infer are required. activity_id, target,
@@ -366,7 +367,7 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "import_weekly_plan",
     {
       title: "Import weekly plan",
-      description: "Import and activate a complete ChatGPT-generated weekly plan JSON object. Every activity needs movement-level subtasks except runs, weighted-vest work, rest, and other general activity, which log at the activity level and take an empty subtasks array. References are source catalogs and never expand into exercise rows. For an existing week, included dates are merged and untouched dates are preserved. Read planning context first. Include coaching_review describing each current memory version applied or excepted, and reconcile run changes with the peak target. Report the returned receipt and unresolved conflicts.",
+      description: "Import and activate a complete ChatGPT-generated weekly plan JSON object. Every activity needs movement-level subtasks except runs, weighted-vest work, rest, and other general activity, which log at the activity level and take an empty subtasks array. References are source catalogs and never expand into exercise rows. Warm-ups, cool-downs, and unloaded timed mobility default to log_mode check. A sets-x-reps prescription or loaded carry still logs, and an explicit log_mode always wins. Optional subtask progression (up, hold, or down) overrides the load arrow. For an existing week, included dates are merged and untouched dates are preserved. Read planning context first. Include coaching_review describing each current memory version applied or excepted, and reconcile run changes with the peak target. Report the returned receipt and unresolved conflicts.",
       inputSchema: {
         plan: weeklyPlanSchema.describe("Weekly plan JSON with week_start_date, goals, and activities. Each activity needs date, title, type, and subtasks; IDs, targets, equipment, and references are optional and filled in server-side.")
       }

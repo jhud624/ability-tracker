@@ -224,7 +224,9 @@ Subtasks may be plain strings or objects. The optional `log_mode` (also accepted
 - `loaded-timed` — time + total lb + rounds
 - `check` — checkbox only, no logging fields
 
-Without `log_mode`, the app infers the mode from the title: an explicit `3x10`-style prescription means strength; stretch/hold/walk/warmup wording means timed; sled/carry wording means loaded-timed.
+Without `log_mode`, a `3x10`-style prescription is strength and sled, carry, farmer, or weighted-vest work is loaded-timed, including inside a warm-up title. Other warm-ups, cool-downs, and unloaded timed mobility (stretches, circles, backward walking, and similar drills) are checkbox rows. Other timed work, such as a plank, stays timed. Set `log_mode` when a warm-up or stretch should actually be logged.
+
+Optional `progression` on a subtask is `up`, `hold`, or `down`. It sets that exercise's load arrow. Omit it and Coach Loop compares the last logged session for the same movement with the rep range, RPE target, difficulty, and back-pain feedback.
 
 Exercise tracking is not medical advice. Stop if a movement causes pain and use professional guidance for injuries.
 
