@@ -57,7 +57,7 @@
         "name": "body_fat_percentage",
         "units": "%",
         "data": [
-          { "date": "2026-07-02 07:30:00 -0400", "qty": 0.185, "source": "Hume" },
+          { "date": "2026-07-02 07:30:00 -0400", "qty": 18.5, "source": "Hume" },
           { "date": "2026-07-03 08:05:00 -0400", "qty": 21.4, "source": "Renpho" },
           { "date": "2026-07-04 08:00:00 -0400", "qty": 1, "source": "Hume" }
         ]

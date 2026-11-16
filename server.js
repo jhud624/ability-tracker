@@ -1488,14 +1488,21 @@ function dateFromMetricSample(sample) {
 function metricSamplesFromBody(body) {
   if (Array.isArray(body.metrics)) return body.metrics;
   if (body.data && typeof body.data === "object") {
-    // Health Auto Export posts metrics under data.metrics[]. A top-level
-    // metrics array still wins, matching the payloads this importer already accepted.
-    if (Array.isArray(body.data.metrics)) return body.data.metrics;
     return Object.entries(body.data)
       .filter(([name]) => !String(name).toLowerCase().includes("workout"))
       .map(([name, data]) => ({ name, data }));
   }
   return [];
+}
+
+// Body measurements read both the legacy top-level metrics array and the HAE
+// data.metrics envelope. Daily steps, heart rate, HRV, sleep, and energy stay
+// on metricSamplesFromBody and do not unwrap data.metrics.
+function bodyMeasurementGroups(body) {
+  const groups = [];
+  if (Array.isArray(body?.metrics)) groups.push(...body.metrics);
+  if (Array.isArray(body?.data?.metrics)) groups.push(...body.data.metrics);
+  return groups;
 }
 
 const BODY_MEASUREMENT_METRICS = new Set(["body_mass", "body_fat_percentage", "body_mass_index"]);
@@ -1552,14 +1559,19 @@ function normalizeWeightToPounds(qty, units) {
   return null;
 }
 
-// Body fat is stored as a percent from 0 to 100. HealthKit's percent unit, and
-// some HAE exports, use a 0–1 fraction (0.185 means 18.5%). A qty already on
-// the percent scale is greater than 1 and is kept. Exactly 0 stays 0. A qty in
-// (0, 1] is multiplied by 100 — 1.0 is the fraction for 100%, not 1%.
-function normalizeBodyFatPercent(qty) {
+function isPercentUnit(units) {
+  const unit = String(units || "").trim().toLowerCase().replace(/\.$/, "");
+  return unit === "%" || unit === "percent" || unit === "percentage";
+}
+
+// Body fat is stored as a percent from 0 to 100. When the metric says the
+// quantity is already a percent (`%`, `percent`, or `percentage`), the number
+// is kept: 1 stays 1%. The 0–1 fraction rule (0.185 → 18.5, and 1 → 100) applies
+// only when units are missing or are not a percent.
+function normalizeBodyFatPercent(qty, units) {
   const amount = numberFromHealthValue(qty);
   if (amount === null || amount < 0 || amount > 100) return null;
-  const percent = amount > 0 && amount <= 1 ? amount * 100 : amount;
+  const percent = !isPercentUnit(units) && amount > 0 && amount <= 1 ? amount * 100 : amount;
   return roundTo(percent, 1);
 }
 
@@ -1588,7 +1600,7 @@ function normalizeBodyMeasurementSample(metric, sample, units) {
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
   let value = null;
   if (metric === "body_mass") value = normalizeWeightToPounds(sample.qty ?? sample.value, units);
-  else if (metric === "body_fat_percentage") value = normalizeBodyFatPercent(sample.qty ?? sample.value);
+  else if (metric === "body_fat_percentage") value = normalizeBodyFatPercent(sample.qty ?? sample.value, units);
   else if (metric === "body_mass_index") value = normalizeBmi(sample.qty ?? sample.value);
   if (value === null) return null;
   return storedBodyMeasurement({
@@ -1602,7 +1614,7 @@ function normalizeBodyMeasurementSample(metric, sample, units) {
 
 function normalizeBodyMeasurementsFromPayload(body) {
   const readings = [];
-  metricSamplesFromBody(body).forEach((metricGroup) => {
+  bodyMeasurementGroups(body).forEach((metricGroup) => {
     const metric = metricGroupName(metricGroup);
     if (!BODY_MEASUREMENT_METRICS.has(metric)) return;
     metricGroupSamples(metricGroup).forEach((sample) => {
@@ -1743,7 +1755,10 @@ function normalizeHealthPayload(body) {
       if (name.includes("step")) aggregateMetric(metricsByDate, date, "steps", value, "sum");
       if (name.includes("resting") && name.includes("heart")) aggregateMetric(metricsByDate, date, "resting_heart_rate", value, "avg");
       if (name.includes("variability") || name.includes("hrv")) aggregateMetric(metricsByDate, date, "hrv_ms", value, "avg");
-      if (name.includes("sleep")) aggregateMetric(metricsByDate, date, "sleep_hours", minutesFromDuration(sample.value ?? sample.duration ?? sample) / 60, "sum");
+      if (name.includes("sleep")) {
+        const sleepMinutes = minutesFromDuration(sample.value ?? sample.duration ?? sample);
+        if (sleepMinutes !== null) aggregateMetric(metricsByDate, date, "sleep_hours", sleepMinutes / 60, "sum");
+      }
       if (name.includes("active") && name.includes("energy")) aggregateMetric(metricsByDate, date, "active_energy_kcal", value, "sum");
     });
   });
