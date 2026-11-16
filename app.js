@@ -733,12 +733,14 @@ function sameMovementTitle(loggedTitle, prescribedTitle) {
 
 function createExerciseLogControls(activity, exercise, log = {}, guidance = {}) {
   const prefill = guidance.prefill || null;
-  // A saved short name ("Wall sit") is the same movement as "Wall sit — 3x30 sec".
-  // Keep the full prescription for mode and placeholders. A real swap uses the logged name.
-  const sameMovement = sameMovementTitle(log.title, exercise.title);
-  const prescriptionTitle = sameMovement ? exercise.title : String(log.title || exercise.title);
+  // Equivalence recovers the prescription ("Wall sit" keeps "Wall sit — 3x30 sec"
+  // for the duration fields). A saved selector title is what gets shown and saved,
+  // including an equipment change such as barbell curl to dumbbell curl.
+  const loggedTitle = String(log.title || "").trim();
+  const sameMovement = sameMovementTitle(loggedTitle, exercise.title);
+  const prescriptionTitle = !loggedTitle || sameMovement ? exercise.title : loggedTitle;
   const shortTitle = baseExerciseTitle(exercise.title);
-  const selectedTitle = sameMovement && shortTitle ? shortTitle : prescriptionTitle;
+  const selectedTitle = loggedTitle || shortTitle || exercise.title;
   const swapLabel = document.createElement("label");
   swapLabel.className = "exercise-swap-label";
   swapLabel.textContent = "exercise";

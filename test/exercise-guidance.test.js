@@ -5,7 +5,8 @@ const {
   exerciseIdentityKey,
   previousStrengthSession,
   prefillFromLog,
-  progressionCue
+  progressionCue,
+  normalizeProgression
 } = require("../exercise-guidance");
 
 test("check mode is the default for warm-ups, cool-downs, and unloaded mobility", () => {
@@ -32,6 +33,10 @@ test("explicit logging modes and real strength or loaded work stay loggable", ()
   assert.equal(resolveExerciseLogMode("Backward walk or sled 5 minutes"), "loaded-timed");
   assert.equal(resolveExerciseLogMode("Warmup: squat — 3x10"), "strength");
   assert.equal(resolveExerciseLogMode("Warm-up: weighted vest walk — 5 minutes"), "loaded-timed");
+  assert.equal(resolveExerciseLogMode("Weighted squat 3x10"), "strength");
+  assert.equal(resolveExerciseLogMode("Weighted pull-up 3x8"), "strength");
+  assert.equal(resolveExerciseLogMode("Weighted sit-up 3x12"), "strength");
+  assert.equal(resolveExerciseLogMode("Carry-over 3x10"), "strength");
 });
 
 const glossary = [{
@@ -168,6 +173,9 @@ test("the load arrow follows the last session, and a plan override wins", () => 
   assert.equal(progressionCue({ previous: easyTop, explicit: "down" }).source, "plan");
   assert.equal(progressionCue({ previous: null }), null);
   assert.equal(progressionCue({ previous: null, explicit: "up" }).direction, "up");
+  assert.equal(normalizeProgression("up"), "up");
+  assert.equal(normalizeProgression(["up"]), undefined);
+  assert.equal(normalizeProgression(1), undefined);
   assert.equal(prefillFromLog(null), null);
   assert.equal(prefillFromLog({ duration_seconds: 60 }), null);
 });

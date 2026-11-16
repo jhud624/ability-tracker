@@ -314,3 +314,73 @@ test("changing the movement discards an unaccepted suggestion instead of saving 
     else process.env.TZ = previousTZ;
   }
 });
+
+test("a saved dumbbell curl stays selected on a barbell curl prescription", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const calls = [];
+  const state = {
+    goals: { primary: "Arms" },
+    coach_notes: "",
+    streak: { days_without_miss: 0, weeks_without_miss: 0 },
+    gear: [],
+    planning_periods: [],
+    coach_memories: [],
+    exercise_glossary: [],
+    health: { actual_workouts: [] },
+    active_plan: {
+      activities: [{
+        activity_id: "arms",
+        date: "2026-11-16",
+        title: "Arms",
+        type: "strength",
+        required_or_optional: "required",
+        completion: { completed: false, subtasks: {} },
+        subtasks: [{ subtask_id: "curl", title: "Barbell curl — 3x10" }],
+        exercise_logs: {
+          curl: { exercise_id: "curl", title: "Dumbbell curl", weight_lbs: 40, sets: 3, reps: 10, updated_at: "2026-11-16T12:00:00Z" }
+        }
+      }]
+    }
+  };
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, { url: "http://127.0.0.1:4173/", pretendToBeVisual: true, runScripts: "outside-only" });
+  const { window } = dom;
+  installClock(dom.getInternalVMContext());
+  window.fetch = async (input, options = {}) => {
+    const url = String(input?.url || input);
+    const method = String(options.method || "GET").toUpperCase();
+    const body = options.body ? String(options.body) : "";
+    calls.push({ url, method, body });
+    const respond = (status, payload) => ({ status, ok: status >= 200 && status < 300, json: async () => payload });
+    if (url.includes("/api/session")) return respond(200, { authenticated: true });
+    if (url.includes("/api/state")) return respond(200, state);
+    if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+    if (method === "POST" && url.includes("/exercise-log")) return respond(200, state);
+    return respond(500, { error: "synthetic test does not save this write" });
+  };
+  for (const file of ["activity-summary.js", "today-list.js", "exercise-guidance.js", "app.js"]) {
+    runInPage(dom.getInternalVMContext(), fs.readFileSync(path.join(root, file), "utf8"), file);
+  }
+
+  try {
+    const { document } = window;
+    await waitFor(() => document.querySelector("#today-list select[name='title']")?.value === "Dumbbell curl");
+    const row = document.querySelector("#today-list .exercise-entry-row");
+    assert.equal(row.querySelector("input[name='weight_lbs']").value, "40");
+    assert.equal(row.querySelector("input[name='sets']").value, "3");
+    assert.equal(row.querySelector("input[name='reps']").value, "10");
+    assert.equal(row.querySelector("input[name='sets']").placeholder, "3");
+    assert.equal(row.querySelector("input[name='reps']").placeholder, "10");
+    row.querySelector("input[name='weight_lbs']").dispatchEvent(new window.Event("blur", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const posts = calls.filter((call) => call.method === "POST" && call.url.includes("/exercise-log"));
+    assert.ok(posts.every((call) => JSON.parse(call.body).title !== "Barbell curl"));
+    assert.equal(document.querySelector("#today-list select[name='title']").value, "Dumbbell curl");
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});

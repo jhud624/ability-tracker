@@ -60,7 +60,8 @@ function normalizeLogMode(value) {
 }
 
 function normalizeProgression(value) {
-  const direction = String(value || "").trim().toLowerCase();
+  if (typeof value !== "string") return undefined;
+  const direction = value.trim().toLowerCase();
   if (direction === "up" || direction === "hold" || direction === "down") return direction;
   return undefined;
 }
@@ -74,7 +75,12 @@ function isWarmupOrCooldown(title) {
 }
 
 function isLoadedTimedTitle(title) {
-  return /\b(sleds?|carries|carry|farmers?|weighted|vests?|drags?)\b/i.test(String(title || ""));
+  // A hyphen keeps "Carry-over" from matching "carry".
+  return /\b(?:sleds?|carries|carry|farmers?|drags?)\b(?!-)/i.test(String(title || ""));
+}
+
+function isWeightedVestTitle(title) {
+  return /\b(?:weighted|vests?)\b/i.test(String(title || ""));
 }
 
 function isUnloadedMobilityTitle(title) {
@@ -102,9 +108,12 @@ function resolveExerciseLogMode(title, explicitMode) {
   const explicit = normalizeLogMode(explicitMode);
   if (explicit) return explicit;
   if (isCheckOnlyTitle(title)) return "check";
+  // Sled, carry, farmer, and drag stay loaded even with a 3xN count.
+  // Weighted or vest work yields to a sets×reps prescription.
   if (isLoadedTimedTitle(title)) return "loaded-timed";
   const prescription = parseSetRepPrescription(title);
   if (prescription && !prescription.unit) return "strength";
+  if (isWeightedVestTitle(title)) return "loaded-timed";
   if (isWarmupOrCooldown(title) || isUnloadedMobilityTitle(title)) return "check";
   if (!exerciseSupportsDuration(title)) return "strength";
   return "timed";
@@ -245,7 +254,7 @@ function sessionLogMode(title, explicitMode) {
   const prescription = parseSetRepPrescription(title);
   if (prescription && !prescription.unit) return "strength";
   if (!exerciseSupportsDuration(title)) return "strength";
-  if (isLoadedTimedTitle(title)) return "loaded-timed";
+  if (isLoadedTimedTitle(title) || isWeightedVestTitle(title)) return "loaded-timed";
   return "timed";
 }
 
