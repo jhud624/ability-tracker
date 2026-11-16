@@ -673,7 +673,8 @@ function createDefaultState(referenceDate = new Date()) {
     audit_events: [],
     health: {
       actual_workouts: [],
-      daily_metrics: []
+      daily_metrics: [],
+      body_measurements: []
     }
   };
 }
@@ -731,6 +732,7 @@ function migrateStore(store) {
     health: {
       actual_workouts: Array.isArray(health.actual_workouts) ? health.actual_workouts.map(normalizeActualWorkout) : [],
       daily_metrics: Array.isArray(health.daily_metrics) ? health.daily_metrics : [],
+      body_measurements: normalizeStoredBodyMeasurements(health.body_measurements),
       imports: Array.isArray(health.imports) ? health.imports.slice(-20) : [],
       ...(health.raw_debug ? { raw_debug: health.raw_debug } : {})
     },
@@ -1486,11 +1488,202 @@ function dateFromMetricSample(sample) {
 function metricSamplesFromBody(body) {
   if (Array.isArray(body.metrics)) return body.metrics;
   if (body.data && typeof body.data === "object") {
+    // Health Auto Export posts metrics under data.metrics[]. A top-level
+    // metrics array still wins, matching the payloads this importer already accepted.
+    if (Array.isArray(body.data.metrics)) return body.data.metrics;
     return Object.entries(body.data)
       .filter(([name]) => !String(name).toLowerCase().includes("workout"))
       .map(([name, data]) => ({ name, data }));
   }
   return [];
+}
+
+const BODY_MEASUREMENT_METRICS = new Set(["body_mass", "body_fat_percentage", "body_mass_index"]);
+const KG_TO_LB = 2.20462;
+
+function metricGroupName(metricGroup) {
+  return String(metricGroup?.name || metricGroup?.type || metricGroup?.metric || "").trim().toLowerCase();
+}
+
+function metricGroupSamples(metricGroup) {
+  if (Array.isArray(metricGroup?.data)) return metricGroup.data;
+  if (Array.isArray(metricGroup?.samples)) return metricGroup.samples;
+  return [];
+}
+
+function metricGroupUnits(metricGroup, sample) {
+  const units = metricGroup?.units ?? metricGroup?.unit ?? sample?.units ?? sample?.unit ?? "";
+  return units === null || units === undefined ? "" : String(units).trim();
+}
+
+function measurementTimestamp(sample) {
+  const value = sample?.date || sample?.start_date || sample?.startDate || sample?.start || sample?.end_date || sample?.endDate || "";
+  return String(value).trim();
+}
+
+function measurementSource(sample) {
+  const raw = sample?.source ?? sample?.sourceName ?? sample?.source_name;
+  if (raw === undefined || raw === null) return null;
+  const text = String(raw).trim();
+  return text || null;
+}
+
+function bodyMeasurementId(metric, date, source) {
+  return `${metric}|${date}|${source || ""}`;
+}
+
+function bodyMeasurementKey(reading) {
+  return `${reading.metric}|${reading.date}|${reading.source ?? ""}`;
+}
+
+function weightUnitKind(units) {
+  const unit = String(units || "").trim().toLowerCase().replace(/\.$/, "");
+  if (["kg", "kgs", "kilogram", "kilograms"].includes(unit)) return "kg";
+  if (["lb", "lbs", "pound", "pounds"].includes(unit)) return "lb";
+  return "";
+}
+
+function normalizeWeightToPounds(qty, units) {
+  const amount = numberFromHealthValue(qty);
+  if (amount === null || amount < 0) return null;
+  const kind = weightUnitKind(units);
+  if (kind === "kg") return roundTo(amount * KG_TO_LB, 1);
+  if (kind === "lb") return roundTo(amount, 1);
+  return null;
+}
+
+// Body fat is stored as a percent from 0 to 100. HealthKit's percent unit, and
+// some HAE exports, use a 0–1 fraction (0.185 means 18.5%). A qty already on
+// the percent scale is greater than 1 and is kept. Exactly 0 stays 0. A qty in
+// (0, 1] is multiplied by 100 — 1.0 is the fraction for 100%, not 1%.
+function normalizeBodyFatPercent(qty) {
+  const amount = numberFromHealthValue(qty);
+  if (amount === null || amount < 0 || amount > 100) return null;
+  const percent = amount > 0 && amount <= 1 ? amount * 100 : amount;
+  return roundTo(percent, 1);
+}
+
+function normalizeBmi(qty) {
+  const amount = numberFromHealthValue(qty);
+  if (amount === null || amount <= 0) return null;
+  return roundTo(amount, 1);
+}
+
+function storedBodyMeasurement({ metric, date, day, value, source, measurement_id }) {
+  return {
+    measurement_id: String(measurement_id || bodyMeasurementId(metric, date, source)),
+    metric,
+    date,
+    day,
+    value,
+    units: metric === "body_mass" ? "lb" : metric === "body_fat_percentage" ? "%" : null,
+    source: source || null
+  };
+}
+
+function normalizeBodyMeasurementSample(metric, sample, units) {
+  if (!sample || typeof sample !== "object") return null;
+  const date = measurementTimestamp(sample);
+  const day = dateFromMetricSample({ date });
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  let value = null;
+  if (metric === "body_mass") value = normalizeWeightToPounds(sample.qty ?? sample.value, units);
+  else if (metric === "body_fat_percentage") value = normalizeBodyFatPercent(sample.qty ?? sample.value);
+  else if (metric === "body_mass_index") value = normalizeBmi(sample.qty ?? sample.value);
+  if (value === null) return null;
+  return storedBodyMeasurement({
+    metric,
+    date,
+    day,
+    value,
+    source: measurementSource(sample)
+  });
+}
+
+function normalizeBodyMeasurementsFromPayload(body) {
+  const readings = [];
+  metricSamplesFromBody(body).forEach((metricGroup) => {
+    const metric = metricGroupName(metricGroup);
+    if (!BODY_MEASUREMENT_METRICS.has(metric)) return;
+    metricGroupSamples(metricGroup).forEach((sample) => {
+      const reading = normalizeBodyMeasurementSample(metric, sample, metricGroupUnits(metricGroup, sample));
+      if (reading) readings.push(reading);
+    });
+  });
+  return readings;
+}
+
+function normalizeStoredBodyMeasurement(item) {
+  if (!item || typeof item !== "object") return null;
+  const metric = String(item.metric || "");
+  if (!BODY_MEASUREMENT_METRICS.has(metric)) return null;
+  const date = String(item.date || "").trim();
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(item.day || ""))
+    ? String(item.day)
+    : dateFromMetricSample({ date });
+  const value = Number(item.value);
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(value)) return null;
+  return storedBodyMeasurement({
+    metric,
+    date,
+    day,
+    value,
+    source: item.source,
+    measurement_id: item.measurement_id
+  });
+}
+
+function compareBodyMeasurements(a, b) {
+  return String(a.date).localeCompare(String(b.date))
+    || String(a.metric).localeCompare(String(b.metric))
+    || String(a.source || "").localeCompare(String(b.source || ""));
+}
+
+function sameBodyMeasurement(a, b) {
+  return a.metric === b.metric
+    && a.date === b.date
+    && a.day === b.day
+    && a.value === b.value
+    && a.units === b.units
+    && (a.source ?? null) === (b.source ?? null);
+}
+
+function normalizeStoredBodyMeasurements(value) {
+  const readings = (Array.isArray(value) ? value : [])
+    .map(normalizeStoredBodyMeasurement)
+    .filter(Boolean);
+  const map = new Map();
+  readings.forEach((reading) => {
+    if (!map.has(bodyMeasurementKey(reading))) map.set(bodyMeasurementKey(reading), reading);
+  });
+  return Array.from(map.values()).sort(compareBodyMeasurements);
+}
+
+function mergeBodyMeasurements(existing, incoming) {
+  const map = new Map(normalizeStoredBodyMeasurements(existing).map((reading) => [bodyMeasurementKey(reading), reading]));
+  incoming.forEach((reading) => {
+    const key = bodyMeasurementKey(reading);
+    const previous = map.get(key);
+    if (previous && sameBodyMeasurement(previous, reading)) return;
+    map.set(key, storedBodyMeasurement({
+      ...reading,
+      measurement_id: previous?.measurement_id || reading.measurement_id
+    }));
+  });
+  return Array.from(map.values()).sort(compareBodyMeasurements);
+}
+
+function latestWeighIns(measurements, limit = 10) {
+  return (Array.isArray(measurements) ? measurements : [])
+    .filter((item) => item && item.metric === "body_mass" && Number.isFinite(Number(item.value)))
+    .sort((a, b) => {
+      const timeDelta = (parseHealthTimestamp(b.date) || 0) - (parseHealthTimestamp(a.date) || 0);
+      if (timeDelta) return timeDelta;
+      return String(b.date || "").localeCompare(String(a.date || ""))
+        || String(a.source || "").localeCompare(String(b.source || ""));
+    })
+    .slice(0, limit)
+    .map((item) => storedBodyMeasurement(item));
 }
 
 function arrayFromHealthExportValue(value) {
@@ -1563,7 +1756,11 @@ function normalizeHealthPayload(body) {
     return cleaned;
   }).filter((metric) => /^\d{4}-\d{2}-\d{2}$/.test(metric.date));
 
-  return { normalizedActuals, normalizedMetrics };
+  return {
+    normalizedActuals,
+    normalizedMetrics,
+    normalizedBodyMeasurements: normalizeBodyMeasurementsFromPayload(body)
+  };
 }
 
 function describeHealthPayload(body) {
@@ -1623,7 +1820,7 @@ function safeRawSamplePayload(body) {
 }
 
 function mergeHealth(store, body, source = "manual") {
-  const { normalizedActuals, normalizedMetrics } = normalizeHealthPayload(body);
+  const { normalizedActuals, normalizedMetrics, normalizedBodyMeasurements } = normalizeHealthPayload(body);
   const importRecord = {
     import_id: crypto.randomUUID(),
     source,
@@ -1635,6 +1832,7 @@ function mergeHealth(store, body, source = "manual") {
   return {
     actual_workouts: upsertById(store.health.actual_workouts || [], normalizedActuals, "actual_id"),
     daily_metrics: upsertById(store.health.daily_metrics || [], normalizedMetrics, "metric_id"),
+    body_measurements: mergeBodyMeasurements(store.health.body_measurements, normalizedBodyMeasurements),
     imports: [...(store.health.imports || []), importRecord].slice(-20)
   };
 }
@@ -2281,8 +2479,14 @@ function coachingBrief(store) {
 
 function publicState(store) {
   const plan = activePlan(store);
+  const health = store.health || {};
   return {
     ...store,
+    health: {
+      ...health,
+      body_measurements: Array.isArray(health.body_measurements) ? health.body_measurements : [],
+      latest_weigh_ins: latestWeighIns(health.body_measurements)
+    },
     review_environment: process.env.VERCEL_ENV === "preview",
     run_plan: buildRunPlanFromState({ ...store, active_plan: activePlan(store) }),
     coaching_brief: coachingBrief(store),

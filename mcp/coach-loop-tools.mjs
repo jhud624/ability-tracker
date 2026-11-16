@@ -207,7 +207,7 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
     "get_state",
     {
       title: "Get Coach Loop state",
-      description: "Read goals, active plan, completions, feedback, and imported health actuals."
+      description: "Read goals, active plan, completions, feedback, and imported health actuals. health.latest_weigh_ins is the newest 10 stored body-mass readings, in pounds, newest first. Full weight, body-fat, and BMI history is health.body_measurements."
     },
     async () => asText(await request("/api/state"))
   );

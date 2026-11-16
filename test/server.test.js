@@ -955,6 +955,218 @@ test("health auto export payload imports workouts and metrics", async () => {
   }
 });
 
+test("health auto export stores body mass, body fat, and BMI without changing existing health rows", async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  const previousApiToken = process.env.COACH_LOOP_API_TOKEN;
+  const dataDir = fs.mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-body-metrics-test-`);
+  process.env.COACH_LOOP_DATA_DIR = dataDir;
+  process.env.COACH_LOOP_API_TOKEN = "test-token";
+
+  // 82.4 kg → 181.7 lb (× 2.20462, rounded to 0.1). lb and lbs values stay in pounds.
+  // Body fat 0.185 → 18.5 and qty 1 → 100 because a 0–1 reading is a fraction; 21.4 is already a percent.
+  // BMI 23.76 → 23.8. Stone and a weight sample with no units are skipped.
+  const haePayload = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "hae-body-metrics.json"), "utf8"));
+  const reading = (metric, date, value, source) => ({
+    measurement_id: `${metric}|${date}|${source || ""}`,
+    metric,
+    date,
+    day: date.slice(0, 10),
+    value,
+    units: metric === "body_mass" ? "lb" : metric === "body_fat_percentage" ? "%" : null,
+    source
+  });
+  const july2 = "2026-07-02 07:30:00 -0400";
+  const july3 = "2026-07-03 08:05:00 -0400";
+  const expectedMeasurements = [
+    reading("body_fat_percentage", july2, 18.5, "Hume"),
+    reading("body_mass", july2, 181, "Apple Watch"),
+    reading("body_mass", july2, 181.7, "Hume"),
+    reading("body_mass_index", july2, 24.2, "Hume"),
+    reading("body_fat_percentage", july3, 21.4, "Renpho"),
+    reading("body_mass", july3, 190.5, null),
+    reading("body_mass_index", july3, 23.8, null),
+    reading("body_fat_percentage", "2026-07-04 08:00:00 -0400", 100, "Hume"),
+    reading("body_mass", "2026-07-06 08:10:00 -0400", 188, "Withings")
+  ];
+
+  try {
+    await request(handleRequest, { path: "/api/state" });
+    const storePath = path.join(dataDir, "store.json");
+    const store = JSON.parse(fs.readFileSync(storePath, "utf8"));
+    store.health = {
+      actual_workouts: [
+        {
+          id: "legacy-run-1",
+          name: "Outdoor Run",
+          start: "2026-06-01 08:00:00 -0400",
+          duration: 600
+        }
+      ],
+      daily_metrics: [
+        {
+          metric_id: "2026-06-01",
+          date: "2026-06-01",
+          steps: 4321,
+          resting_heart_rate: 55,
+          hrv_ms: 70,
+          sleep_hours: 7.5,
+          active_energy_kcal: 400
+        }
+      ],
+      imports: [
+        {
+          import_id: "legacy-import-1",
+          source: "health_auto_export",
+          received_at: "2026-06-01T12:00:00.000Z",
+          payload: { top_level_keys: ["workouts"], shapes: {} },
+          normalized_actual_workouts: 1,
+          normalized_daily_metrics: 1
+        }
+      ]
+    };
+    fs.writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+
+    const before = await request(handleRequest, { path: "/api/state" });
+    assert.equal(before.statusCode, 200);
+    assert.equal(before.body.health.actual_workouts[0].actual_id, "legacy-run-1");
+    assert.equal(before.body.health.actual_workouts[0].duration_minutes, 10);
+    assert.equal(before.body.health.daily_metrics[0].steps, 4321);
+    assert.equal(before.body.health.daily_metrics[0].resting_heart_rate, 55);
+    assert.equal(before.body.health.daily_metrics[0].hrv_ms, 70);
+    assert.equal(before.body.health.daily_metrics[0].sleep_hours, 7.5);
+    assert.equal(before.body.health.daily_metrics[0].active_energy_kcal, 400);
+    assert.equal(before.body.health.imports[0].import_id, "legacy-import-1");
+    assert.deepEqual(before.body.health.body_measurements, []);
+    assert.deepEqual(before.body.health.latest_weigh_ins, []);
+
+    const imported = await request(handleRequest, {
+      method: "POST",
+      path: "/api/health/auto-export",
+      headers: { authorization: "Bearer test-token" },
+      body: haePayload
+    });
+    assert.equal(imported.statusCode, 200);
+    assert.deepEqual(imported.body.health.body_measurements, expectedMeasurements);
+    assert.deepEqual(imported.body.health.latest_weigh_ins, [
+      reading("body_mass", "2026-07-06 08:10:00 -0400", 188, "Withings"),
+      reading("body_mass", july3, 190.5, null),
+      reading("body_mass", july2, 181, "Apple Watch"),
+      reading("body_mass", july2, 181.7, "Hume")
+    ]);
+    assert.deepEqual(
+      imported.body.health.actual_workouts.find((actual) => actual.actual_id === "legacy-run-1"),
+      before.body.health.actual_workouts[0]
+    );
+    assert.deepEqual(
+      imported.body.health.daily_metrics.find((metric) => metric.date === "2026-06-01"),
+      before.body.health.daily_metrics[0]
+    );
+    assert.deepEqual(imported.body.health.imports[0], before.body.health.imports[0]);
+    const importedSteps = imported.body.health.daily_metrics.find((metric) => metric.date === "2026-07-01");
+    assert.equal(importedSteps.steps, 8450);
+    assert.equal(importedSteps.metric_id, "2026-07-01");
+    assert.equal(Object.hasOwn(importedSteps, "body_mass"), false);
+    assert.equal(Object.hasOwn(importedSteps, "weight_lbs"), false);
+    const importedWorkout = imported.body.health.actual_workouts.find((actual) => actual.actual_id === "body-metrics-workout-1");
+    assert.equal(importedWorkout.type, "run");
+    assert.equal(importedWorkout.duration_minutes, 20);
+    assert.equal(importedWorkout.distance_miles, 2);
+    assert.equal(imported.body.health.imports.at(-1).source, "health_auto_export");
+    assert.equal(imported.body.health.imports.at(-1).normalized_actual_workouts, 1);
+    assert.equal(imported.body.health.imports.at(-1).normalized_daily_metrics, 1);
+    assert.equal(imported.body.health.imports.length, 2);
+
+    const saved = JSON.parse(fs.readFileSync(storePath, "utf8"));
+    assert.equal(saved.health.latest_weigh_ins, undefined);
+    assert.equal(saved.health.body_measurements.length, expectedMeasurements.length);
+
+    const replayed = await request(handleRequest, {
+      method: "POST",
+      path: "/api/health/auto-export",
+      headers: { authorization: "Bearer test-token" },
+      body: haePayload
+    });
+    assert.equal(replayed.statusCode, 200);
+    assert.deepEqual(replayed.body.health.body_measurements, expectedMeasurements);
+    assert.deepEqual(replayed.body.health.latest_weigh_ins, imported.body.health.latest_weigh_ins);
+    assert.equal(replayed.body.health.actual_workouts.length, imported.body.health.actual_workouts.length);
+    assert.equal(replayed.body.health.daily_metrics.length, imported.body.health.daily_metrics.length);
+    assert.deepEqual(
+      replayed.body.health.actual_workouts.find((actual) => actual.actual_id === "legacy-run-1"),
+      before.body.health.actual_workouts[0]
+    );
+    assert.deepEqual(
+      replayed.body.health.daily_metrics.find((metric) => metric.date === "2026-06-01"),
+      before.body.health.daily_metrics[0]
+    );
+    assert.equal(replayed.body.health.daily_metrics.find((metric) => metric.date === "2026-07-01").steps, 8450);
+    assert.deepEqual(replayed.body.health.imports[0], before.body.health.imports[0]);
+    assert.equal(replayed.body.health.imports.length, 3);
+
+    const followUp = await request(handleRequest, {
+      method: "POST",
+      path: "/api/health/auto-export",
+      headers: { authorization: "Bearer test-token" },
+      body: {
+        metrics: [
+          {
+            name: "step_count",
+            data: [
+              { date: "2026-07-08 10:00:00 -0400", qty: 1000 },
+              { date: "2026-07-08 11:00:00 -0400", qty: 500 }
+            ]
+          },
+          {
+            name: "resting_heart_rate",
+            data: [
+              { date: "2026-07-08 07:00:00 -0400", qty: 57 },
+              { date: "2026-07-08 07:30:00 -0400", qty: 59 }
+            ]
+          },
+          {
+            name: "heart_rate_variability_sdnn",
+            data: [{ date: "2026-07-08 07:05:00 -0400", qty: 61 }]
+          },
+          {
+            name: "sleep_analysis",
+            data: [{ date: "2026-07-08 00:00:00 -0400", qty: 420 }]
+          },
+          {
+            name: "active_energy",
+            data: [{ date: "2026-07-08 18:00:00 -0400", qty: 450 }]
+          }
+        ]
+      }
+    });
+    assert.equal(followUp.statusCode, 200);
+    assert.deepEqual(followUp.body.health.body_measurements, expectedMeasurements);
+    const followUpDay = followUp.body.health.daily_metrics.find((metric) => metric.date === "2026-07-08");
+    assert.equal(followUpDay.steps, 1500);
+    assert.equal(followUpDay.resting_heart_rate, 58);
+    assert.equal(followUpDay.hrv_ms, 61);
+    assert.equal(followUpDay.sleep_hours, 7);
+    assert.equal(followUpDay.active_energy_kcal, 450);
+    assert.deepEqual(
+      followUp.body.health.daily_metrics.find((metric) => metric.date === "2026-06-01"),
+      before.body.health.daily_metrics[0]
+    );
+    assert.equal(followUp.body.health.daily_metrics.find((metric) => metric.date === "2026-07-01").steps, 8450);
+    assert.deepEqual(
+      followUp.body.health.actual_workouts.find((actual) => actual.actual_id === "legacy-run-1"),
+      before.body.health.actual_workouts[0]
+    );
+    assert.deepEqual(followUp.body.health.imports[0], before.body.health.imports[0]);
+    assert.equal(followUp.body.health.actual_workouts.length, 2);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
+    if (previousApiToken === undefined) delete process.env.COACH_LOOP_API_TOKEN;
+    else process.env.COACH_LOOP_API_TOKEN = previousApiToken;
+  }
+});
+
 test("health auto export imports nested data.workouts payloads", async () => {
   const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
   const previousApiToken = process.env.COACH_LOOP_API_TOKEN;

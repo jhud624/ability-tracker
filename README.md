@@ -174,7 +174,7 @@ Authorization: Bearer <COACH_LOOP_API_TOKEN>
 Content-Type: application/json
 ```
 
-The adapter accepts Health Auto Export-style `workouts` and `metrics` payloads and normalizes workouts, steps, resting heart rate, HRV, sleep duration, and active energy into Coach Loop health actuals.
+The adapter accepts Health Auto Export-style `workouts` and `metrics` payloads and normalizes workouts, steps, resting heart rate, HRV, sleep duration, and active energy into Coach Loop health actuals. Body mass, body fat percentage, and BMI from `data.metrics` are stored separately on `health.body_measurements` (weight in pounds) and do not change those daily metrics.
 
 ## Plan JSON shape
 
