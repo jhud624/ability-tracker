@@ -95,17 +95,17 @@ function exerciseSupportsDuration(title) {
   return /\b(timer|hold|stretch|plank|walk|warmup|warm-up|cooldown|cool-down|reset|circuit|breathing|mobility|sec|second|seconds|min|minute|minutes)\b/i.test(String(title || ""));
 }
 
-// Explicit log_mode always wins, including check. Otherwise warm-ups, cool-downs,
-// and unloaded mobility are checkbox rows. Strength prescriptions and loaded
-// carries stay loggable.
+// Explicit log_mode always wins, including check. A sets-x-reps prescription or
+// loaded work stays loggable even inside a warm-up title. Other warm-ups,
+// cool-downs, and unloaded mobility are checkbox rows.
 function resolveExerciseLogMode(title, explicitMode) {
   const explicit = normalizeLogMode(explicitMode);
   if (explicit) return explicit;
-  if (isCheckOnlyTitle(title) || isWarmupOrCooldown(title)) return "check";
+  if (isCheckOnlyTitle(title)) return "check";
+  if (isLoadedTimedTitle(title)) return "loaded-timed";
   const prescription = parseSetRepPrescription(title);
   if (prescription && !prescription.unit) return "strength";
-  if (isLoadedTimedTitle(title)) return "loaded-timed";
-  if (isUnloadedMobilityTitle(title)) return "check";
+  if (isWarmupOrCooldown(title) || isUnloadedMobilityTitle(title)) return "check";
   if (!exerciseSupportsDuration(title)) return "strength";
   return "timed";
 }

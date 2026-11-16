@@ -71,6 +71,9 @@ function pageState() {
           required_or_optional: "required",
           equipment: ["gear-power-rack-cable-station", "gear-olympic-barbell"],
           completion: { completed: false, subtasks: {} },
+          exercise_logs: {
+            wall: { exercise_id: "wall", title: "Wall sit", duration_seconds: 30, updated_at: "2026-11-16T12:00:00Z" }
+          },
           blocks: [{
             block_id: "squat-bird",
             mode: "alternating_sets",
@@ -188,6 +191,7 @@ test("today card uses check rows, a collapsed round line, suggestions, and an in
     const wall = row(document, "Wall sit");
     assert.ok(wall.querySelector("input[name='duration_value']"));
     assert.equal(wall.querySelector("input[name='weight_lbs']"), null);
+    assert.equal(wall.querySelector("input[name='duration_value']").value, "30");
     assert.equal(wall.querySelector("select[name='duration_unit']").value, "sec");
     assert.equal(wall.querySelector("input[name='sets']").placeholder, "3");
     assert.equal(wall.querySelector("select[name='title']").value, "Wall sit");
@@ -219,6 +223,7 @@ test("today card uses check rows, a collapsed round line, suggestions, and an in
     assert.equal(saved.sets, "3");
     assert.equal(saved.reps, "8");
     assert.equal(weight.classList.contains("is-prefill"), false);
+    assert.match(squat.querySelector(".exercise-last").textContent, /135/);
   } finally {
     dom.window.close();
     if (previousTZ === undefined) delete process.env.TZ;

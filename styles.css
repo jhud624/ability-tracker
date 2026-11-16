@@ -2256,7 +2256,7 @@ input, select, textarea { min-width: 0; max-width: 100%; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.exercise-log-meta .exercise-last:empty,
+.exercise-log-meta .exercise-last:empty { visibility: hidden; }
 .exercise-log-meta .exercise-total:empty { display: none; }
 .exercise-log-meta .autosave-status {
   width: 5.5rem;

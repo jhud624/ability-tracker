@@ -26,8 +26,12 @@ test("explicit logging modes and real strength or loaded work stay loggable", ()
   assert.equal(resolveExerciseLogMode("Barbell back squat — 3 sets of 8 reps at a moderate load (RPE 6)"), "strength");
   assert.equal(resolveExerciseLogMode("Horizontal press 3x8-10"), "strength");
   assert.equal(resolveExerciseLogMode("Farmer carry — 40 seconds"), "loaded-timed");
+  assert.equal(resolveExerciseLogMode("Farmer carry 3x40"), "loaded-timed");
+  assert.equal(resolveExerciseLogMode("Sled push 4x20 yd"), "loaded-timed");
   assert.equal(resolveExerciseLogMode("Sled push", "loaded-timed"), "loaded-timed");
   assert.equal(resolveExerciseLogMode("Backward walk or sled 5 minutes"), "loaded-timed");
+  assert.equal(resolveExerciseLogMode("Warmup: squat — 3x10"), "strength");
+  assert.equal(resolveExerciseLogMode("Warm-up: weighted vest walk — 5 minutes"), "loaded-timed");
 });
 
 const glossary = [{

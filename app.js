@@ -484,12 +484,14 @@ function movementOptions(title) {
 }
 
 function lastExerciseLogFor(activity, exercise) {
-  const key = normalizedExerciseKey(exercise.title);
-  return activities()
-    .filter((item) => item.activity_id !== activity.activity_id && item.date <= activity.date)
-    .flatMap((item) => Object.values(item.exercise_logs || {}).map((log) => ({ ...log, date: item.date })))
-    .filter((log) => Number(log.weight_lbs || 0) && normalizedExerciseKey(log.title) === key)
-    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0] || null;
+  const previous = previousStrengthSession({
+    history: exerciseHistory(),
+    activity,
+    title: exercise.title,
+    glossary: state.data?.exercise_glossary || []
+  });
+  if (!previous?.log) return null;
+  return { ...previous.log, date: previous.date };
 }
 
 function lastExerciseLogText(log) {
@@ -722,13 +724,21 @@ function suggestedFieldValue(saved, suggested) {
   return { value: "", suggested: false };
 }
 
+function sameMovementTitle(loggedTitle, prescribedTitle) {
+  const logged = String(loggedTitle || "").trim();
+  if (!logged) return true;
+  const glossary = state.data?.exercise_glossary || [];
+  return exerciseIdentityKey(logged, glossary) === exerciseIdentityKey(prescribedTitle, glossary);
+}
+
 function createExerciseLogControls(activity, exercise, log = {}, guidance = {}) {
   const prefill = guidance.prefill || null;
-  // Mode and placeholders need the full prescription ("Wall sit — 3x30 sec").
-  // The selector can show the short movement name without changing that.
-  const prescriptionTitle = log.title || exercise.title;
+  // A saved short name ("Wall sit") is the same movement as "Wall sit — 3x30 sec".
+  // Keep the full prescription for mode and placeholders. A real swap uses the logged name.
+  const sameMovement = sameMovementTitle(log.title, exercise.title);
+  const prescriptionTitle = sameMovement ? exercise.title : String(log.title || exercise.title);
   const shortTitle = baseExerciseTitle(exercise.title);
-  const selectedTitle = !log.title && shortTitle ? shortTitle : prescriptionTitle;
+  const selectedTitle = sameMovement && shortTitle ? shortTitle : prescriptionTitle;
   const swapLabel = document.createElement("label");
   swapLabel.className = "exercise-swap-label";
   swapLabel.textContent = "exercise";
