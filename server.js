@@ -772,6 +772,13 @@ function normalizePlanForCurrentSchema(plan) {
   };
 }
 
+function isRealDateKey(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return false;
+  const [year, month, day] = String(value).split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 function validateDateKey(value, field) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) {
     throw new Error(`${field} must be a YYYY-MM-DD date`);
@@ -992,6 +999,42 @@ function weekEndDateFor(weekStartDate) {
 
 function weekEndDate(plan) {
   return weekEndDateFor(plan.week_start_date);
+}
+
+function planContainingDate(store, date) {
+  const matches = (store.plans || []).filter((plan) => {
+    const start = String(plan.week_start_date || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return false;
+    return date >= start && date <= weekEndDateFor(start);
+  });
+  if (!matches.length) return null;
+  return matches.find((plan) => plan.plan_id === store.active_plan_id)
+    || matches.sort((a, b) => b.week_start_date.localeCompare(a.week_start_date))[0];
+}
+
+function planWeekPayload(plan, store) {
+  const activities = [...(plan.activities || [])]
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.title).localeCompare(String(b.title)))
+    .map((activity) => {
+      const viewed = activityWithState(activity, store);
+      return {
+        activity_id: activity.activity_id,
+        date: activity.date,
+        title: activity.title,
+        required_or_optional: activity.required_or_optional,
+        completion: {
+          completed: Boolean(viewed.completion?.completed),
+          completed_at: viewed.completion?.completed_at || null,
+          logged_date: viewed.completion?.logged_date || null
+        }
+      };
+    });
+  return {
+    plan_id: plan.plan_id,
+    week_start_date: plan.week_start_date,
+    week_end_date: weekEndDate(plan),
+    activities
+  };
 }
 
 function activityWithState(activity, store) {
@@ -1882,10 +1925,70 @@ function requiredActivitiesByDate(store) {
     .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
 }
 
+const HEALTH_ACTUAL_STREAK_EXCUSE_MINUTES = 20;
+const STREAK_TIME_ZONE = "America/New_York";
+
+function healthActualDurationMinutes(actual) {
+  const minutes = Number(actual?.duration_minutes);
+  return Number.isFinite(minutes) ? minutes : null;
+}
+
+function calendarDateInTimeZone(instant, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(instant);
+  const value = (type) => parts.find((part) => part.type === type)?.value || "";
+  const year = value("year");
+  const month = value("month");
+  const day = value("day");
+  return /^\d{4}$/.test(year) && /^\d{2}$/.test(month) && /^\d{2}$/.test(day) ? `${year}-${month}-${day}` : "";
+}
+
+// One America/New_York calendar date. A timestamp is converted from its own
+// UTC offset. The stored date is used only when start_date cannot be placed
+// on that calendar. Activity dates are already that calendar date.
+function healthActualExcuseDate(actual) {
+  const start = String(actual?.start_date || "").trim();
+  if (start) {
+    const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(start);
+    if (hasOffset) {
+      const instant = new Date(start);
+      if (!Number.isNaN(instant.getTime())) {
+        const zoned = calendarDateInTimeZone(instant, STREAK_TIME_ZONE);
+        if (zoned) return zoned;
+      }
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(start)) {
+      return start;
+    }
+  }
+  const fallback = String(actual?.date || "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(fallback) ? fallback : "";
+}
+
+// A same-day imported workout can keep a required activity from counting as a
+// miss. It does not mark the activity complete; completion stays on the
+// checkbox and on type-matched actuals. Every required activity on that
+// New York calendar day is covered by one qualifying workout.
+function healthActualExcusesRequiredMiss(store, activity) {
+  const activityDay = /^\d{4}-\d{2}-\d{2}$/.test(String(activity?.date || "")) ? activity.date : "";
+  if (!activityDay) return false;
+  return (store.health?.actual_workouts || []).some((actual) => (
+    healthActualExcuseDate(actual) === activityDay
+    && healthActualDurationMinutes(actual) >= HEALTH_ACTUAL_STREAK_EXCUSE_MINUTES
+  ));
+}
+
+function requiredActivityIsMissed(store, activity) {
+  return !activityIsComplete(store, activity) && !healthActualExcusesRequiredMiss(store, activity);
+}
+
 function missedRequiredActivities(store, today) {
   return requiredActivitiesByDate(store)
     .filter((activity) => activity.date < today)
-    .filter((activity) => !activityIsComplete(store, activity));
+    .filter((activity) => requiredActivityIsMissed(store, activity));
 }
 
 function createMissStreak(store, referenceDate = new Date()) {
@@ -1912,16 +2015,18 @@ function createMissStreak(store, referenceDate = new Date()) {
     .some(([, weekActivities]) => {
       const dueInWeek = weekActivities.filter((activity) => activity.date < today);
       if (!dueInWeek.length) return false;
-      const weekHasMiss = dueInWeek.some((activity) => !activityIsComplete(store, activity));
+      const weekHasMiss = dueInWeek.some((activity) => requiredActivityIsMissed(store, activity));
       if (weekHasMiss) return true;
       weeksWithoutMiss += 1;
       return false;
     });
 
+  const breaking = missed.length ? missed[missed.length - 1] : null;
   return {
     days_without_miss: daysWithoutMiss,
     weeks_without_miss: weeksWithoutMiss,
     latest_missed_required_date: latestMissDate,
+    breaking_miss: breaking ? { date: breaking.date, title: breaking.title } : null,
     missed_required_count: missed.length,
     overdue_required_count: missed.length,
     current_week_on_track: !missed.some((activity) => {
@@ -2363,6 +2468,7 @@ const MCP_WRITE_TOOLS = new Set([
   "upsert_exercise_glossary",
   "import_weekly_plan",
   "update_day_plan",
+  "set_activity_requirement",
   "link_actual_to_activity",
   "apply_actual_workout",
   "update_goals",
@@ -2636,6 +2742,23 @@ async function handleApi(req, res, pathname) {
     if (!requireReadAuth(req, res)) return;
     const plan = activePlan(store);
     sendJson(res, 200, plan ? { ...plan, activities: plan.activities.map((activity) => activityWithState(activity, store)) } : null);
+    return;
+  }
+
+  const planWeekMatch = pathname.match(/^\/api\/plans\/weeks\/([^/]+)$/);
+  if (req.method === "GET" && planWeekMatch) {
+    if (!requireReadAuth(req, res)) return;
+    const date = decodeURIComponent(planWeekMatch[1]);
+    if (!isRealDateKey(date)) {
+      sendError(res, 400, "date must be a real YYYY-MM-DD date");
+      return;
+    }
+    const plan = planContainingDate(store, date);
+    if (!plan) {
+      sendError(res, 404, "No plan week contains that date");
+      return;
+    }
+    sendJson(res, 200, planWeekPayload(plan, store));
     return;
   }
 
@@ -3071,6 +3194,51 @@ async function handleApi(req, res, pathname) {
       };
     }, { action: "plan.day.update", target: date });
     sendJson(res, 200, publicState(nextStore));
+    return;
+  }
+
+  const requirementMatch = pathname.match(/^\/api\/activities\/([^/]+)\/requirement$/);
+  if (req.method === "PATCH" && requirementMatch) {
+    if (!requireWriteAuth(req, res)) return;
+    const activityId = decodeURIComponent(requirementMatch[1]);
+    const body = await readJsonBody(req);
+    const requirement = String(body.required_or_optional || "").trim().toLowerCase();
+    if (requirement !== "required" && requirement !== "optional") {
+      sendError(res, 400, "required_or_optional must be required or optional");
+      return;
+    }
+    let unchanged = null;
+    try {
+      const nextStore = await updateStore((current) => {
+        let found = false;
+        let changed = false;
+        const plans = (current.plans || []).map((plan) => {
+          let planChanged = false;
+          const activities = (plan.activities || []).map((activity) => {
+            if (activity.activity_id !== activityId) return activity;
+            found = true;
+            if (activity.required_or_optional === requirement) return activity;
+            changed = true;
+            planChanged = true;
+            return { ...activity, required_or_optional: requirement };
+          });
+          return planChanged ? { ...plan, activities, updated_at: nowIso() } : plan;
+        });
+        if (!found) throw Object.assign(new Error("Activity not found"), { statusCode: 404 });
+        if (!changed) {
+          unchanged = current;
+          throw Object.assign(new Error("unchanged"), { noop: true });
+        }
+        return { ...current, plans };
+      }, { action: "activity.requirement", target: `${activityId}:${requirement}` });
+      sendJson(res, 200, publicState(nextStore));
+    } catch (error) {
+      if (error.noop) {
+        sendJson(res, 200, publicState(unchanged));
+        return;
+      }
+      sendError(res, error.statusCode || 400, error.message || "Unable to update activity requirement");
+    }
     return;
   }
 

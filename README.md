@@ -66,6 +66,8 @@ Available tools:
 - `remove_gear`
 - `import_weekly_plan`
 - `update_day_plan`
+- `get_plan_week`
+- `set_activity_requirement`
 - `update_goals`
 - `patch_goals`
 - `update_run_plan`
@@ -186,6 +188,7 @@ Weekly plans are treated as complete planning contracts:
 - Keep all activity dates inside the declared Monday-through-Sunday plan week.
 - Activity IDs must be unique across the whole week, including activities preserved from dates a partial import or day update did not touch. Omit `activity_id` to have a stable one derived; supply it only to keep an existing activity's completions and logs.
 - `required_or_optional` is authoritative when present. A legacy `target.optional` flag is only consulted when the field is absent.
+- `update_day_plan` replaces one date in the active plan week only. `get_plan_week` reads the stored week that contains a date, including past weeks, with each activity's id, date, title, requirement, and completion. `set_activity_requirement` sets `required_or_optional` to `required` or `optional` on one of those activities and does not mark it complete. A date with no stored week is an error.
 
 ```json
 {

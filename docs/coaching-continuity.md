@@ -5,7 +5,7 @@ Coach Loop is the durable source for coaching decisions. A conversation only cha
 ## Daily coaching
 
 1. Read planning context and existing memories before editing preferences.
-2. Save explicit durable preferences using `upsert_coaching_memories`. Include the user's source wording and an event identifier. Reuse stable keys and provide `expected_version` for corrections. Keep temporary constraints date-bounded; keep one-workout requests in `update_day_plan` or activity feedback.
+2. Save explicit durable preferences using `upsert_coaching_memories`. Include the user's source wording and an event identifier. Reuse stable keys and provide `expected_version` for corrections. Keep temporary constraints date-bounded; keep one-workout requests in `update_day_plan` or activity feedback. To change only `required_or_optional` on an activity in a past week, read that week with `get_plan_week` and then call `set_activity_requirement`; `update_day_plan` still edits the active week only.
 3. Inspect the write receipt. `verified` means the write was read back. `changed_after_save` means another edit intervened. `saved_verification_pending` means the write succeeded but the verification read failed. The latter two require a fresh read, not blindly repeating the write.
 4. Report storage warnings separately: primary data may have saved even if automatic backup creation failed.
 

@@ -397,6 +397,34 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
   );
 
   registerTool(
+    "get_plan_week",
+    {
+      title: "Get a stored plan week",
+      description: "Read the stored plan week that contains a date, including past weeks. Each activity includes activity_id, date, title, required_or_optional, and completion. Use activity_id with set_activity_requirement. A date outside every stored week is an error.",
+      inputSchema: {
+        date: z.string().describe("YYYY-MM-DD date inside the plan week to read.")
+      }
+    },
+    async ({ date }) => asText(await request(`/api/plans/weeks/${encodeURIComponent(date)}`))
+  );
+
+  registerTool(
+    "set_activity_requirement",
+    {
+      title: "Set activity requirement",
+      description: "Set required_or_optional on one activity in any stored plan week, including past weeks. Use this when a workout outside the active week should count as required or optional. This changes only that field: it does not mark the activity complete, edit other activities, or replace the day. update_day_plan still replaces one date in the active plan week only.",
+      inputSchema: {
+        activity_id: z.string().min(1).describe("Activity id from any stored plan week."),
+        required_or_optional: z.enum(["required", "optional"]).describe("Whether this activity counts as required.")
+      }
+    },
+    async ({ activity_id, required_or_optional }) => asText(await request(`/api/activities/${encodeURIComponent(activity_id)}/requirement`, {
+      method: "PATCH",
+      body: JSON.stringify({ required_or_optional })
+    }))
+  );
+
+  registerTool(
     "link_actual_to_activity",
     {
       title: "Link actual workout to activity",
