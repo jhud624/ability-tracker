@@ -772,6 +772,13 @@ function normalizePlanForCurrentSchema(plan) {
   };
 }
 
+function isRealDateKey(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return false;
+  const [year, month, day] = String(value).split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 function validateDateKey(value, field) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) {
     throw new Error(`${field} must be a YYYY-MM-DD date`);
@@ -2742,8 +2749,8 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && planWeekMatch) {
     if (!requireReadAuth(req, res)) return;
     const date = decodeURIComponent(planWeekMatch[1]);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      sendError(res, 400, "date must be a YYYY-MM-DD date");
+    if (!isRealDateKey(date)) {
+      sendError(res, 400, "date must be a real YYYY-MM-DD date");
       return;
     }
     const plan = planContainingDate(store, date);
@@ -3198,15 +3205,6 @@ async function handleApi(req, res, pathname) {
     const requirement = String(body.required_or_optional || "").trim().toLowerCase();
     if (requirement !== "required" && requirement !== "optional") {
       sendError(res, 400, "required_or_optional must be required or optional");
-      return;
-    }
-    const existing = (store.plans || []).flatMap((plan) => plan.activities || []).filter((activity) => activity.activity_id === activityId);
-    if (!existing.length) {
-      sendError(res, 404, "Activity not found");
-      return;
-    }
-    if (existing.every((activity) => activity.required_or_optional === requirement)) {
-      sendJson(res, 200, publicState(store));
       return;
     }
     let unchanged = null;

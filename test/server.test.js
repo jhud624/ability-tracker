@@ -2787,6 +2787,20 @@ test("set activity requirement changes one past-week activity and the streak sto
     assert.equal(missingWeek.statusCode, 404);
     assert.match(missingWeek.body.error, /No plan week/);
 
+    for (const date of ["2026-02-30", "2026-02-29", "2026-13-01", "nope", "2026-2-30"]) {
+      const impossible = await request(handleRequest, {
+        path: `/api/plans/weeks/${date}`,
+        headers
+      });
+      assert.equal(impossible.statusCode, 400, date);
+      assert.match(impossible.body.error, /YYYY-MM-DD/);
+    }
+    const leapDay = await request(handleRequest, {
+      path: "/api/plans/weeks/2024-02-29",
+      headers
+    });
+    assert.equal(leapDay.statusCode, 404);
+
     const noToken = await request(handleRequest, {
       method: "PATCH",
       path: `/api/activities/${encodeURIComponent(pastActivity.activity_id)}/requirement`,

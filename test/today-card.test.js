@@ -474,7 +474,7 @@ test("saving a set keeps the Today card scroll position and the field being edit
   }
 });
 
-test("the follow-up scroll restore leaves a later user scroll and focus alone", async () => {
+async function rerenderTodayCard(beforeFrame) {
   const previousTZ = process.env.TZ;
   process.env.TZ = "UTC";
   const state = pageState();
@@ -508,19 +508,26 @@ test("the follow-up scroll restore leaves a later user scroll and focus alone", 
     runInPage(dom.getInternalVMContext(), fs.readFileSync(path.join(root, file), "utf8"), file);
   }
 
+  const scroll = { y: 720 };
   try {
     const { document } = window;
     await waitFor(() => document.querySelector("#today-list input[name='weight_lbs']"));
-    const frames = [];
-    window.requestAnimationFrame = (callback) => {
-      frames.push(callback);
-      return frames.length;
-    };
-    let scrollY = 720;
+    const nativeFrame = window.requestAnimationFrame.bind(window);
+    let frameDone = false;
+    let hooked = false;
+    window.requestAnimationFrame = (callback) => nativeFrame((time) => {
+      if (!hooked) {
+        hooked = true;
+        scroll.y = 0;
+        beforeFrame(window, document, scroll);
+      }
+      callback(time);
+      frameDone = true;
+    });
     Object.defineProperty(window, "scrollX", { configurable: true, get: () => 0 });
-    Object.defineProperty(window, "scrollY", { configurable: true, get: () => scrollY });
+    Object.defineProperty(window, "scrollY", { configurable: true, get: () => scroll.y });
     window.scrollTo = (x, y) => {
-      scrollY = x && typeof x === "object" ? Number(x.top || 0) : Number(y || 0);
+      scroll.y = x && typeof x === "object" ? Number(x.top || 0) : Number(y || 0);
     };
     const list = document.querySelector("#today-list");
     const inner = Object.getOwnPropertyDescriptor(window.Element.prototype, "innerHTML");
@@ -529,7 +536,7 @@ test("the follow-up scroll restore leaves a later user scroll and focus alone", 
       get() { return inner.get.call(this); },
       set(value) {
         inner.set.call(this, value);
-        if (String(value) === "") scrollY = 0;
+        if (String(value) === "") scroll.y = 0;
       }
     });
 
@@ -539,20 +546,46 @@ test("the follow-up scroll restore leaves a later user scroll and focus alone", 
     const checkbox = squat.querySelector("input[type='checkbox']");
     checkbox.checked = true;
     checkbox.dispatchEvent(new window.Event("change", { bubbles: true }));
-    await waitFor(() => !weight.isConnected && frames.length > 0);
-
-    const refresh = document.querySelector("#refresh-button");
-    scrollY = 200;
-    refresh.focus();
-    const queued = frames.splice(0, frames.length);
-    queued.forEach((callback) => callback());
-
-    assert.equal(scrollY, 200);
-    assert.equal(document.activeElement, refresh);
+    await waitFor(() => !weight.isConnected && frameDone);
+    return {
+      scrollY: scroll.y,
+      activeId: document.activeElement?.id || "",
+      activeName: document.activeElement?.getAttribute?.("name") || "",
+      activeIsBody: document.activeElement === document.body
+    };
   } finally {
     dom.window.close();
     if (previousTZ === undefined) delete process.env.TZ;
     else process.env.TZ = previousTZ;
+  }
+}
+
+test("a late jump back to the top is restored on the next animation frame", async () => {
+  const restored = await rerenderTodayCard(() => {});
+  assert.equal(restored.scrollY, 720);
+  assert.equal(restored.activeName, "weight_lbs");
+});
+
+test("user input before the next animation frame keeps that scroll and focus", async () => {
+  for (const type of ["wheel", "touchstart", "keydown"]) {
+    const kept = await rerenderTodayCard((pageWindow, pageDocument, pageScroll) => {
+      pageDocument.body.focus();
+      pageWindow.dispatchEvent(new pageWindow.Event(type, { bubbles: true, cancelable: true }));
+      pageScroll.y = 200;
+      pageDocument.querySelector("#refresh-button").focus();
+    });
+    assert.equal(kept.scrollY, 200, type);
+    assert.equal(kept.activeId, "refresh-button", type);
+
+    const leftAlone = await rerenderTodayCard((pageWindow, pageDocument) => {
+      const focused = pageDocument.activeElement;
+      if (focused && typeof focused.blur === "function") focused.blur();
+      pageDocument.body.focus();
+      pageWindow.dispatchEvent(new pageWindow.Event(type, { bubbles: true, cancelable: true }));
+    });
+    assert.equal(leftAlone.scrollY, 0, type);
+    assert.equal(leftAlone.activeName, "", type);
+    assert.equal(leftAlone.activeIsBody, true, type);
   }
 });
 

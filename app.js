@@ -2815,23 +2815,24 @@ function render() {
   renderActuals();
   renderRunTracking();
   // Replacing #today-list drops the focused set field and, in mobile Safari,
-  // jumps the page to the top. Put both back after the new card is in place.
-  const scrollLeftByRebuild = { x: window.scrollX || 0, y: window.scrollY || 0 };
-  const focusLeftByRebuild = document.activeElement;
+  // jumps the page to the top again on the next frame. Restore now, and again
+  // on that frame unless the user actually touched the page in between.
+  let userInputSinceRebuild = false;
+  const markUserInput = () => { userInputSinceRebuild = true; };
+  const inputEvents = ["pointerdown", "touchstart", "wheel", "keydown"];
+  const inputListenerOptions = { capture: true, passive: true };
+  inputEvents.forEach((type) => window.addEventListener(type, markUserInput, inputListenerOptions));
+  const stopWatchingInput = () => {
+    inputEvents.forEach((type) => window.removeEventListener(type, markUserInput, inputListenerOptions));
+  };
   restoreTodayEditingViewport(scrollX, scrollY, editing);
   if (typeof window.requestAnimationFrame === "function") {
     window.requestAnimationFrame(() => {
-      const scrollStillAtRebuild = (window.scrollX || 0) === scrollLeftByRebuild.x
-        && (window.scrollY || 0) === scrollLeftByRebuild.y;
-      const focus = document.activeElement;
-      const focusStillUnclaimed = !focus
-        || focus === focusLeftByRebuild
-        || focus === document.body
-        || focus === document.documentElement;
-      if (scrollStillAtRebuild && focusStillUnclaimed) {
-        restoreTodayEditingViewport(scrollX, scrollY, editing);
-      }
+      stopWatchingInput();
+      if (!userInputSinceRebuild) restoreTodayEditingViewport(scrollX, scrollY, editing);
     });
+  } else {
+    stopWatchingInput();
   }
 }
 
