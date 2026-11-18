@@ -2449,6 +2449,64 @@ test("a same-day health actual of at least 20 minutes does not break the require
   assert.deepEqual(justUnder.breaking_miss, { date: "2026-11-15", title: "Light arms" });
 });
 
+test("a late-night UTC health workout excuses the America/New_York day, including every required activity that day", () => {
+  const reference = new Date("2026-11-18T12:00:00");
+  const lateNight = {
+    actual_id: "late-utc",
+    date: "2026-11-16",
+    start_date: "2026-11-16T02:30:00Z",
+    name: "Other",
+    type: "other",
+    duration_minutes: 30,
+    source: "health_auto_export"
+  };
+  const offsetForm = { ...lateNight, actual_id: "late-offset", start_date: "2026-11-15T21:30:00-05:00" };
+  const plans = [
+    {
+      plan_id: "plan-2026-11-09",
+      week_start_date: "2026-11-09",
+      activities: [
+        {
+          activity_id: "act-2026-11-15-light-arms",
+          date: "2026-11-15",
+          title: "Light arms",
+          type: "lift",
+          required_or_optional: "required",
+          subtasks: []
+        },
+        {
+          activity_id: "act-2026-11-15-pulling",
+          date: "2026-11-15",
+          title: "Pulling",
+          type: "lift",
+          required_or_optional: "required",
+          subtasks: []
+        }
+      ]
+    },
+    {
+      plan_id: "plan-2026-11-16",
+      week_start_date: "2026-11-16",
+      activities: [{
+        activity_id: "act-2026-11-16-easy-run",
+        date: "2026-11-16",
+        title: "Easy run",
+        type: "run",
+        required_or_optional: "required",
+        subtasks: []
+      }]
+    }
+  ];
+
+  for (const actual of [lateNight, offsetForm]) {
+    const streak = createStreak(streakReferenceStore({ plans, actuals: [actual] }), reference);
+    assert.equal(streak.missed_required_count, 1, actual.start_date);
+    assert.deepEqual(streak.breaking_miss, { date: "2026-11-16", title: "Easy run" }, actual.start_date);
+    assert.equal(streak.completed_dates.includes("2026-11-15"), false);
+    assert.equal(streak.completed_dates.includes("2026-11-16"), false);
+  }
+});
+
 test("an incomplete required activity still breaks the streak without a qualifying same-day health actual", () => {
   const reference = new Date("2026-11-18T12:00:00");
   const lightArms = {
@@ -2678,6 +2736,76 @@ test("set activity requirement changes one past-week activity and the streak sto
     assert.equal(continued.breaking_miss, null);
     assert.equal(continued.missed_required_count, 0);
     assert.ok(continued.weeks_without_miss > brokenStreak.weeks_without_miss);
+
+    const unchanged = await request(handleRequest, {
+      method: "PATCH",
+      path: `/api/activities/${encodeURIComponent(pastActivity.activity_id)}/requirement`,
+      headers,
+      body: { required_or_optional: "optional" }
+    });
+    assert.equal(unchanged.statusCode, 200);
+    assert.equal(unchanged.body.revision, reread.body.revision);
+    assert.equal(unchanged.body.audit_events.length, reread.body.audit_events.length);
+    const afterNoop = await request(handleRequest, { path: "/api/state" });
+    assert.equal(afterNoop.body.revision, reread.body.revision);
+    assert.equal(afterNoop.body.audit_events.length, reread.body.audit_events.length);
+
+    const week = await request(handleRequest, {
+      path: "/api/plans/weeks/2020-01-08",
+      headers
+    });
+    assert.equal(week.statusCode, 200);
+    assert.equal(week.body.week_start_date, "2020-01-06");
+    const weekActivities = week.body.activities.map((activity) => ({
+      activity_id: activity.activity_id,
+      date: activity.date,
+      title: activity.title,
+      required_or_optional: activity.required_or_optional,
+      completed: activity.completion.completed
+    }));
+    assert.deepEqual(weekActivities, [
+      {
+        activity_id: "act-past-walk",
+        date: "2020-01-06",
+        title: "Easy walk",
+        required_or_optional: "required",
+        completed: true
+      },
+      {
+        activity_id: "act-past-light-arms",
+        date: "2020-01-08",
+        title: "Light arms",
+        required_or_optional: "optional",
+        completed: false
+      }
+    ]);
+
+    const missingWeek = await request(handleRequest, {
+      path: "/api/plans/weeks/1999-06-01",
+      headers
+    });
+    assert.equal(missingWeek.statusCode, 404);
+    assert.match(missingWeek.body.error, /No plan week/);
+
+    const noToken = await request(handleRequest, {
+      method: "PATCH",
+      path: `/api/activities/${encodeURIComponent(pastActivity.activity_id)}/requirement`,
+      headers: { authorization: "" },
+      body: { required_or_optional: "required" }
+    });
+    assert.equal(noToken.statusCode, 401);
+    const badToken = await request(handleRequest, {
+      method: "PATCH",
+      path: `/api/activities/${encodeURIComponent(pastActivity.activity_id)}/requirement`,
+      headers: { authorization: "Bearer wrong-token" },
+      body: { required_or_optional: "required" }
+    });
+    assert.equal(badToken.statusCode, 401);
+    const weekNoToken = await request(handleRequest, {
+      path: "/api/plans/weeks/2020-01-08",
+      headers: { authorization: "" }
+    });
+    assert.equal(weekNoToken.statusCode, 401);
 
     const unknown = await request(handleRequest, {
       method: "PATCH",

@@ -2816,9 +2816,22 @@ function render() {
   renderRunTracking();
   // Replacing #today-list drops the focused set field and, in mobile Safari,
   // jumps the page to the top. Put both back after the new card is in place.
+  const scrollLeftByRebuild = { x: window.scrollX || 0, y: window.scrollY || 0 };
+  const focusLeftByRebuild = document.activeElement;
   restoreTodayEditingViewport(scrollX, scrollY, editing);
   if (typeof window.requestAnimationFrame === "function") {
-    window.requestAnimationFrame(() => restoreTodayEditingViewport(scrollX, scrollY, editing));
+    window.requestAnimationFrame(() => {
+      const scrollStillAtRebuild = (window.scrollX || 0) === scrollLeftByRebuild.x
+        && (window.scrollY || 0) === scrollLeftByRebuild.y;
+      const focus = document.activeElement;
+      const focusStillUnclaimed = !focus
+        || focus === focusLeftByRebuild
+        || focus === document.body
+        || focus === document.documentElement;
+      if (scrollStillAtRebuild && focusStillUnclaimed) {
+        restoreTodayEditingViewport(scrollX, scrollY, editing);
+      }
+    });
   }
 }
 

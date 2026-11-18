@@ -53,6 +53,7 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
     assert.ok(names.includes("upsert_exercise_glossary"));
     assert.ok(names.includes("import_weekly_plan"));
     assert.ok(names.includes("update_day_plan"));
+    assert.ok(names.includes("get_plan_week"));
     assert.ok(names.includes("set_activity_requirement"));
     assert.ok(names.includes("update_goals"));
     assert.ok(names.includes("patch_goals"));
@@ -680,6 +681,21 @@ test("set_activity_requirement updates one past-week activity and rejects unknow
       }
     });
     assert.equal(dayEdit.isError, true);
+
+    const beforeWeek = await client.callTool({
+      name: "get_plan_week",
+      arguments: { date: "2020-01-08" }
+    });
+    assert.notEqual(beforeWeek.isError, true);
+    const beforePayload = JSON.parse(beforeWeek.content[0].text);
+    assert.equal(beforePayload.week_start_date, "2020-01-06");
+    assert.equal(beforePayload.activities.find((activity) => activity.activity_id === "act-past-light-arms").required_or_optional, "required");
+    const missingWeek = await client.callTool({
+      name: "get_plan_week",
+      arguments: { date: "1999-06-01" }
+    });
+    assert.equal(missingWeek.isError, true);
+    assert.match(missingWeek.content[0].text, /No plan week/);
 
     const saved = await client.callTool({
       name: "set_activity_requirement",

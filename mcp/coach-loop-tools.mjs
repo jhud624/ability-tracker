@@ -397,6 +397,18 @@ export function createCoachLoopMcpServer({ apiUrl, apiToken } = {}) {
   );
 
   registerTool(
+    "get_plan_week",
+    {
+      title: "Get a stored plan week",
+      description: "Read the stored plan week that contains a date, including past weeks. Each activity includes activity_id, date, title, required_or_optional, and completion. Use activity_id with set_activity_requirement. A date outside every stored week is an error.",
+      inputSchema: {
+        date: z.string().describe("YYYY-MM-DD date inside the plan week to read.")
+      }
+    },
+    async ({ date }) => asText(await request(`/api/plans/weeks/${encodeURIComponent(date)}`))
+  );
+
+  registerTool(
     "set_activity_requirement",
     {
       title: "Set activity requirement",
