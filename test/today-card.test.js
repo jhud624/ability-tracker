@@ -384,3 +384,141 @@ test("a saved dumbbell curl stays selected on a barbell curl prescription", asyn
     else process.env.TZ = previousTZ;
   }
 });
+
+test("saving a set keeps the Today card scroll position and the field being edited", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageState();
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, { url: "http://127.0.0.1:4173/", pretendToBeVisual: true, runScripts: "outside-only" });
+  const { window } = dom;
+  installClock(dom.getInternalVMContext());
+  window.fetch = async (input, options = {}) => {
+    const url = String(input?.url || input);
+    const method = String(options.method || "GET").toUpperCase();
+    const body = options.body ? String(options.body) : "";
+    const respond = (status, payload) => ({ status, ok: status >= 200 && status < 300, json: async () => payload });
+    if (url.includes("/api/session")) return respond(200, { authenticated: true });
+    if (url.includes("/api/state")) return respond(200, state);
+    if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+    if (method === "POST" && url.includes("/exercise-log")) {
+      const payload = JSON.parse(body);
+      const activity = state.active_plan.activities.find((item) => item.activity_id === "today");
+      activity.exercise_logs = { ...(activity.exercise_logs || {}), [payload.exercise_id]: payload };
+      return respond(200, state);
+    }
+    if (method === "PATCH" && url.includes("/api/activities/")) {
+      const payload = JSON.parse(body);
+      const activity = state.active_plan.activities.find((item) => item.activity_id === "today");
+      activity.completion = {
+        ...(activity.completion || { completed: false }),
+        subtasks: { ...(activity.completion?.subtasks || {}) }
+      };
+      if (payload.subtask_id) activity.completion.subtasks[payload.subtask_id] = Boolean(payload.completed);
+      return respond(200, state);
+    }
+    return respond(500, { error: "synthetic test does not save this write" });
+  };
+  for (const file of ["activity-summary.js", "today-list.js", "exercise-guidance.js", "app.js"]) {
+    runInPage(dom.getInternalVMContext(), fs.readFileSync(path.join(root, file), "utf8"), file);
+  }
+
+  try {
+    const { document } = window;
+    await waitFor(() => document.querySelector("#today-list input[name='weight_lbs']"));
+    const squat = [...document.querySelectorAll("#today-list .subtask-row")].find((item) => item.textContent.includes("Barbell back squat"));
+    const weight = squat.querySelector("input[name='weight_lbs']");
+    weight.value = "145";
+    weight.dispatchEvent(new window.InputEvent("input", { bubbles: true, data: "145", inputType: "insertText" }));
+    weight.focus();
+    weight.setSelectionRange(1, 3);
+
+    let scrollY = 720;
+    Object.defineProperty(window, "scrollX", { configurable: true, get: () => 0 });
+    Object.defineProperty(window, "scrollY", { configurable: true, get: () => scrollY });
+    window.scrollTo = (x, y) => {
+      scrollY = x && typeof x === "object" ? Number(x.top || 0) : Number(y || 0);
+    };
+    const list = document.querySelector("#today-list");
+    const inner = Object.getOwnPropertyDescriptor(window.Element.prototype, "innerHTML");
+    Object.defineProperty(list, "innerHTML", {
+      configurable: true,
+      get() { return inner.get.call(this); },
+      set(value) {
+        inner.set.call(this, value);
+        // Mobile Safari jumps to the top when the focused card is replaced.
+        if (String(value) === "") scrollY = 0;
+      }
+    });
+
+    const checkbox = squat.querySelector("input[type='checkbox']");
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new window.Event("change", { bubbles: true }));
+
+    await waitFor(() => !weight.isConnected);
+    const active = document.activeElement;
+    assert.equal(scrollY, 720);
+    assert.equal(active.isConnected, true);
+    assert.notEqual(active, weight);
+    assert.equal(active.getAttribute("name"), "weight_lbs");
+    assert.equal(active.closest("[data-activity-id]")?.dataset.activityId, "today");
+    assert.equal(active.closest("[data-exercise-id]")?.dataset.exerciseId, "squat");
+    assert.equal(active.value, "145");
+    assert.equal(active.selectionStart, 1);
+    assert.equal(active.selectionEnd, 3);
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});
+
+test("the weeks stat shows the escaped breaking miss and hides it when the streak is clean", async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = "UTC";
+  const state = pageState();
+  state.streak = {
+    days_without_miss: 10,
+    weeks_without_miss: 2,
+    breaking_miss: { date: "2026-11-08", title: "Light arms <img src=x onerror=alert(1)>" }
+  };
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const dom = new JSDOM(html, { url: "http://127.0.0.1:4173/", pretendToBeVisual: true, runScripts: "outside-only" });
+  const { window } = dom;
+  installClock(dom.getInternalVMContext());
+  window.fetch = async (input) => {
+    const url = String(input?.url || input);
+    const respond = (status, payload) => ({ status, ok: status >= 200 && status < 300, json: async () => payload });
+    if (url.includes("/api/session")) return respond(200, { authenticated: true });
+    if (url.includes("/api/state")) return respond(200, state);
+    if (url.includes("/api/coach-summary")) return respond(200, { summary_text: "Synthetic summary" });
+    return respond(500, { error: "synthetic test does not save this write" });
+  };
+  for (const file of ["activity-summary.js", "today-list.js", "exercise-guidance.js", "app.js"]) {
+    runInPage(dom.getInternalVMContext(), fs.readFileSync(path.join(root, file), "utf8"), file);
+  }
+
+  try {
+    const { document } = window;
+    await waitFor(() => document.querySelector("#metric-week")?.textContent === "2");
+    const label = document.querySelector("#metric-week-break");
+    const expectedDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" })
+      .format(new Date("2026-11-08T12:00:00"));
+    assert.equal(label.hidden, false);
+    assert.equal(label.textContent, `last miss: ${expectedDate} · Light arms <img src=x onerror=alert(1)>`);
+    assert.equal(label.querySelector("img"), null);
+    assert.equal(label.children.length, 0);
+
+    state.streak = { days_without_miss: 10, weeks_without_miss: 4, breaking_miss: null };
+    document.querySelector("#refresh-button").click();
+    await waitFor(() => document.querySelector("#metric-week")?.textContent === "4");
+    assert.equal(document.querySelector("#metric-week-break").hidden, true);
+    assert.equal(document.querySelector("#metric-week-break").textContent, "");
+  } finally {
+    dom.window.close();
+    if (previousTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTZ;
+  }
+});

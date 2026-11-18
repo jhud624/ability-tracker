@@ -14,6 +14,7 @@ const elements = {
   metricRuns: document.querySelector("#metric-runs"),
   metricStreak: document.querySelector("#metric-streak"),
   metricWeek: document.querySelector("#metric-week"),
+  metricWeekBreak: document.querySelector("#metric-week-break"),
   tabButtons: [...document.querySelectorAll(".tab-button")],
   weightBanner: document.querySelector("#weight-banner"),
   weightTotal: document.querySelector("#weight-total"),
@@ -165,6 +166,15 @@ function formatDate(value, options = {}) {
     month: "short",
     day: "numeric"
   }).format(date);
+}
+
+function streakBreakLabel(breaking) {
+  if (!breaking || typeof breaking !== "object") return "";
+  const dateKey = String(breaking.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return "";
+  const when = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(`${dateKey}T12:00:00`));
+  const title = String(breaking.title || "").trim();
+  return title ? `last miss: ${when} · ${title}` : `last miss: ${when}`;
 }
 
 function todayKey() {
@@ -327,6 +337,11 @@ function updateOverview() {
   elements.metricRuns.textContent = String(runs.length);
   elements.metricStreak.textContent = String(state.data?.streak?.days_without_miss || 0);
   elements.metricWeek.textContent = String(state.data?.streak?.weeks_without_miss || 0);
+  if (elements.metricWeekBreak) {
+    const breakLabel = streakBreakLabel(state.data?.streak?.breaking_miss);
+    elements.metricWeekBreak.hidden = !breakLabel;
+    elements.metricWeekBreak.textContent = breakLabel;
+  }
 
   const weightMoved = items.reduce((sum, activity) =>
     sum + Object.values(activity.exercise_logs || {}).reduce((subtotal, log) => subtotal + exerciseLogTotal(log), 0), 0);
@@ -455,6 +470,67 @@ function restoreScrollPosition(x, y) {
   } catch {
     // Some test environments do not implement scrolling.
   }
+}
+
+function captureTodayEditingField() {
+  const active = document.activeElement;
+  if (!active || typeof active.closest !== "function" || !elements.todayList?.contains(active)) return null;
+  if (!["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return null;
+  const type = String(active.getAttribute("type") || "").toLowerCase();
+  if (["button", "submit", "reset", "checkbox", "radio", "file", "hidden"].includes(type)) return null;
+  const name = active.getAttribute("name") || "";
+  if (!name) return null;
+  let selectionStart = null;
+  let selectionEnd = null;
+  try {
+    if (typeof active.selectionStart === "number") {
+      selectionStart = active.selectionStart;
+      selectionEnd = active.selectionEnd;
+    }
+  } catch {
+    // Selects and some input types do not expose a caret.
+  }
+  return {
+    activityId: active.closest("[data-activity-id]")?.dataset.activityId || "",
+    exerciseId: active.closest("[data-exercise-id]")?.dataset.exerciseId || "",
+    name,
+    selectionStart,
+    selectionEnd
+  };
+}
+
+function restoreTodayEditingField(snapshot) {
+  if (!snapshot?.name || !elements.todayList) return;
+  const card = [...elements.todayList.querySelectorAll("[data-activity-id]")]
+    .find((node) => node.dataset.activityId === snapshot.activityId);
+  if (!card) return;
+  const scope = snapshot.exerciseId
+    ? [...card.querySelectorAll("[data-exercise-id]")].find((node) => node.dataset.exerciseId === snapshot.exerciseId)
+    : card;
+  if (!scope) return;
+  const field = [...scope.querySelectorAll("input, textarea, select")]
+    .find((control) => control.getAttribute("name") === snapshot.name);
+  if (!field) return;
+  try {
+    field.focus({ preventScroll: true });
+  } catch {
+    try {
+      field.focus();
+    } catch {
+      // The rebuilt control can be unfocusable in some test environments.
+    }
+  }
+  if (snapshot.selectionStart == null || typeof field.setSelectionRange !== "function") return;
+  try {
+    field.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd ?? snapshot.selectionStart);
+  } catch {
+    // Non-text controls reject a selection range.
+  }
+}
+
+function restoreTodayEditingViewport(scrollX, scrollY, editing) {
+  restoreScrollPosition(scrollX, scrollY);
+  restoreTodayEditingField(editing);
 }
 
 function preserveViewportDuring(fn) {
@@ -2724,6 +2800,9 @@ function renderCoachMemories() {
 }
 
 function render() {
+  const scrollX = window.scrollX || 0;
+  const scrollY = window.scrollY || 0;
+  const editing = captureTodayEditingField();
   activeAutosaveFlushers.clear();
   updateOverview();
   renderToday();
@@ -2735,6 +2814,12 @@ function render() {
   renderGear();
   renderActuals();
   renderRunTracking();
+  // Replacing #today-list drops the focused set field and, in mobile Safari,
+  // jumps the page to the top. Put both back after the new card is in place.
+  restoreTodayEditingViewport(scrollX, scrollY, editing);
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(() => restoreTodayEditingViewport(scrollX, scrollY, editing));
+  }
 }
 
 async function loadState() {

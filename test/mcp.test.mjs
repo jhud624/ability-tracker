@@ -53,6 +53,7 @@ test("Coach Loop MCP lists tools and can read the coach summary", async () => {
     assert.ok(names.includes("upsert_exercise_glossary"));
     assert.ok(names.includes("import_weekly_plan"));
     assert.ok(names.includes("update_day_plan"));
+    assert.ok(names.includes("set_activity_requirement"));
     assert.ok(names.includes("update_goals"));
     assert.ok(names.includes("patch_goals"));
     assert.ok(names.includes("apply_actual_workout"));
@@ -597,5 +598,123 @@ test("Coach Loop MCP requires write scope for mutating tools", async () => {
       else process.env[key] = value;
     });
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("set_activity_requirement updates one past-week activity and rejects unknown ids and invalid values", async () => {
+  const previousDataDir = process.env.COACH_LOOP_DATA_DIR;
+  process.env.COACH_LOOP_DATA_DIR = require("node:fs").mkdtempSync(`${require("node:os").tmpdir()}/coach-loop-mcp-requirement-test-`);
+  const { server, url } = await startHttpServer();
+  const client = new Client({ name: "coach-loop-requirement-test", version: "0.1.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["mcp/coach-loop-mcp.mjs"],
+    cwd: process.cwd(),
+    env: {
+      COACH_LOOP_API_URL: url,
+      PATH: process.env.PATH || ""
+    },
+    stderr: "pipe"
+  });
+
+  try {
+    await client.connect(transport);
+    const tools = await client.listTools();
+    const tool = tools.tools.find((item) => item.name === "set_activity_requirement");
+    assert.ok(tool);
+    assert.equal(tool.inputSchema.properties.activity_id.type, "string");
+    assert.deepEqual(tool.inputSchema.properties.required_or_optional.enum, ["required", "optional"]);
+
+    const past = await client.callTool({
+      name: "import_weekly_plan",
+      arguments: {
+        plan: {
+          week_start_date: "2020-01-06",
+          goals: ["Past week"],
+          activities: [
+            {
+              activity_id: "act-past-light-arms",
+              date: "2020-01-08",
+              title: "Light arms",
+              type: "other",
+              required_or_optional: "required",
+              subtasks: []
+            },
+            {
+              activity_id: "act-past-walk",
+              date: "2020-01-06",
+              title: "Easy walk",
+              type: "other",
+              required_or_optional: "required",
+              subtasks: []
+            }
+          ]
+        }
+      }
+    });
+    assert.notEqual(past.isError, true);
+    const current = await client.callTool({
+      name: "import_weekly_plan",
+      arguments: {
+        plan: {
+          week_start_date: "2026-11-16",
+          goals: ["Later week"],
+          activities: [{
+            activity_id: "act-later-run",
+            date: "2026-11-16",
+            title: "Easy run",
+            type: "run",
+            required_or_optional: "required",
+            subtasks: []
+          }]
+        }
+      }
+    });
+    assert.notEqual(current.isError, true);
+
+    const dayEdit = await client.callTool({
+      name: "update_day_plan",
+      arguments: {
+        date: "2020-01-08",
+        activities: [{ title: "Should not replace", type: "other", required_or_optional: "optional", subtasks: [] }]
+      }
+    });
+    assert.equal(dayEdit.isError, true);
+
+    const saved = await client.callTool({
+      name: "set_activity_requirement",
+      arguments: { activity_id: "act-past-light-arms", required_or_optional: "optional" }
+    });
+    assert.notEqual(saved.isError, true);
+    const state = await fetch(`${url}/api/state`).then((response) => response.json());
+    const activities = state.plans.flatMap((plan) => plan.activities);
+    assert.equal(activities.find((activity) => activity.activity_id === "act-past-light-arms").required_or_optional, "optional");
+    assert.equal(activities.find((activity) => activity.activity_id === "act-past-walk").required_or_optional, "required");
+    assert.equal(state.active_plan.activities.some((activity) => activity.activity_id === "act-past-light-arms"), false);
+    assert.notEqual(state.completions?.["act-past-light-arms"]?.completed, true);
+
+    const unknown = await client.callTool({
+      name: "set_activity_requirement",
+      arguments: { activity_id: "missing-activity", required_or_optional: "required" }
+    });
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.content[0].text, /Activity not found/);
+
+    let invalidResult = null;
+    try {
+      invalidResult = await client.callTool({
+        name: "set_activity_requirement",
+        arguments: { activity_id: "act-past-light-arms", required_or_optional: "sometimes" }
+      });
+    } catch (error) {
+      invalidResult = { isError: true, content: [{ text: error.message }] };
+    }
+    assert.equal(invalidResult.isError, true, JSON.stringify(invalidResult));
+    assert.match(invalidResult.content?.[0]?.text || "", /required|optional|invalid|enum/i);
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+    if (previousDataDir === undefined) delete process.env.COACH_LOOP_DATA_DIR;
+    else process.env.COACH_LOOP_DATA_DIR = previousDataDir;
   }
 });

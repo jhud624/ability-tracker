@@ -1882,10 +1882,31 @@ function requiredActivitiesByDate(store) {
     .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
 }
 
+const HEALTH_ACTUAL_STREAK_EXCUSE_MINUTES = 20;
+
+function healthActualDurationMinutes(actual) {
+  const minutes = Number(actual?.duration_minutes);
+  return Number.isFinite(minutes) ? minutes : null;
+}
+
+// A same-day imported workout can keep a required activity from counting as a
+// miss. It does not mark the activity complete; completion stays on the
+// checkbox and on type-matched actuals.
+function healthActualExcusesRequiredMiss(store, activity) {
+  return (store.health?.actual_workouts || []).some((actual) => (
+    actualDateMatchesActivity(actual, activity)
+    && healthActualDurationMinutes(actual) >= HEALTH_ACTUAL_STREAK_EXCUSE_MINUTES
+  ));
+}
+
+function requiredActivityIsMissed(store, activity) {
+  return !activityIsComplete(store, activity) && !healthActualExcusesRequiredMiss(store, activity);
+}
+
 function missedRequiredActivities(store, today) {
   return requiredActivitiesByDate(store)
     .filter((activity) => activity.date < today)
-    .filter((activity) => !activityIsComplete(store, activity));
+    .filter((activity) => requiredActivityIsMissed(store, activity));
 }
 
 function createMissStreak(store, referenceDate = new Date()) {
@@ -1912,16 +1933,18 @@ function createMissStreak(store, referenceDate = new Date()) {
     .some(([, weekActivities]) => {
       const dueInWeek = weekActivities.filter((activity) => activity.date < today);
       if (!dueInWeek.length) return false;
-      const weekHasMiss = dueInWeek.some((activity) => !activityIsComplete(store, activity));
+      const weekHasMiss = dueInWeek.some((activity) => requiredActivityIsMissed(store, activity));
       if (weekHasMiss) return true;
       weeksWithoutMiss += 1;
       return false;
     });
 
+  const breaking = missed.length ? missed[missed.length - 1] : null;
   return {
     days_without_miss: daysWithoutMiss,
     weeks_without_miss: weeksWithoutMiss,
     latest_missed_required_date: latestMissDate,
+    breaking_miss: breaking ? { date: breaking.date, title: breaking.title } : null,
     missed_required_count: missed.length,
     overdue_required_count: missed.length,
     current_week_on_track: !missed.some((activity) => {
@@ -2363,6 +2386,7 @@ const MCP_WRITE_TOOLS = new Set([
   "upsert_exercise_glossary",
   "import_weekly_plan",
   "update_day_plan",
+  "set_activity_requirement",
   "link_actual_to_activity",
   "apply_actual_workout",
   "update_goals",
@@ -3071,6 +3095,40 @@ async function handleApi(req, res, pathname) {
       };
     }, { action: "plan.day.update", target: date });
     sendJson(res, 200, publicState(nextStore));
+    return;
+  }
+
+  const requirementMatch = pathname.match(/^\/api\/activities\/([^/]+)\/requirement$/);
+  if (req.method === "PATCH" && requirementMatch) {
+    if (!requireWriteAuth(req, res)) return;
+    const activityId = decodeURIComponent(requirementMatch[1]);
+    const body = await readJsonBody(req);
+    const requirement = String(body.required_or_optional || "").trim().toLowerCase();
+    if (requirement !== "required" && requirement !== "optional") {
+      sendError(res, 400, "required_or_optional must be required or optional");
+      return;
+    }
+    try {
+      const nextStore = await updateStore((current) => {
+        let found = false;
+        const plans = (current.plans || []).map((plan) => {
+          let changed = false;
+          const activities = (plan.activities || []).map((activity) => {
+            if (activity.activity_id !== activityId) return activity;
+            found = true;
+            if (activity.required_or_optional === requirement) return activity;
+            changed = true;
+            return { ...activity, required_or_optional: requirement };
+          });
+          return changed ? { ...plan, activities, updated_at: nowIso() } : plan;
+        });
+        if (!found) throw Object.assign(new Error("Activity not found"), { statusCode: 404 });
+        return { ...current, plans };
+      }, { action: "activity.requirement", target: `${activityId}:${requirement}` });
+      sendJson(res, 200, publicState(nextStore));
+    } catch (error) {
+      sendError(res, error.statusCode || 400, error.message || "Unable to update activity requirement");
+    }
     return;
   }
 

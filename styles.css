@@ -203,6 +203,15 @@ h1 {
   text-transform: uppercase;
 }
 
+.metric-grid small.streak-break {
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: none;
+}
+
 .tabbar {
   position: sticky;
   top: 0;
